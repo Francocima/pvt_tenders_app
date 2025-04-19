@@ -33,10 +33,16 @@ app = FastAPI(
 )
 
 # Define the data model for the job search request
-class JobSearchRequest(BaseModel):
+class LoginRequest(BaseModel):
     login_url: HttpUrl
     email: str
     password: str
+
+class ScrapeRequest(BaseModel):
+    login_url: HttpUrl
+    email: str
+    password: str
+    target_url: HttpUrl
 
 
 #Scraper creation
@@ -94,7 +100,6 @@ class TenderScraper:
         
         # Execute JavaScript to mask WebDriver presence
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")    
-
 
     async def __aenter__(self):
         """Set up resources when entering context"""
@@ -199,13 +204,96 @@ class TenderScraper:
         except Exception as e:
             print(f"Login failed with error: {str(e)}")
             return False
+    
+    #Scraper function to get the tenders from the page
+
+    async def scrape_tenders(self, target_url: str) -> List[Dict]:
+
+        """
+        Scrapes tender information from the specified URL after login.
         
+        Args:
+            target_url: The URL to scrape data from
+            
+        Returns:
+            List[Dict]: A list of dictionaries containing tender information
+        """
+        #Checkpoint to verify if the driver is initialized
+        if not hasattr(self, 'driver'):
+            print("Driver not initialized. Please login first.")
+            return []
 
-class LoginRequest(BaseModel):
-    login_url: HttpUrl
-    email: str
-    password: str
+        try:
+            print(f"Scraping tenders from: {target_url}")
+            self.driver.get(target_url)
 
+            # Wait for the page to load - See if the URL matches with the correct tenders_url
+            
+            WebDriverWait(self.driver, self.timeout).until(
+                EC.any_of(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".dashboard-container")),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".user-profile")),
+                        EC.url_contains("Alerts:PublicTenders")
+                    ))
+            print("Page loaded successfully")
+
+            # get the page source and parse it with BS4
+            page_source = self.driver.page_source
+            soup = BeautifulSoup(page_source, 'html.parser')
+            
+            # List to store tender information
+            tenders = []
+
+            # search for all the containers with the tenders
+            tender_containers = soup.select('.stdAlertResultsNameCell')  #using the name of the class to get the containers
+            print(f"Found {len(tender_containers)} tender containers")
+
+            
+            # Loop through each container and extract the data
+            for container in tender_containers:
+                tender_data= {} # Dictionary to store tender data
+
+                try: 
+                    # tender title
+                    tender_title = container.select_one('.alertResultName')
+                    if tender_title:
+                        tender_data['tender_title'] = tender_title.text.strip()
+
+                    tender_id = container.select_one('a')['id']
+                    if tender_id:
+                        tender_data['tender_id'] = tender_id
+                    
+                    # Tender block information
+                    info_block = container.select_one('.alertResultInfoBlock')
+                    if info_block:
+                        text_spans = list(info_block.stripped_strings)
+                        if len(text_spans) >= 4:
+                            tender_data['tender_org'] = text_spans[0]
+                            tender_data['tender_location'] = text_spans[1]
+                            tender_data['tender_postcode'] = text_spans[2]
+                        else:
+                            print(f"Unexpected text content: {text_spans}")
+
+                    if tender_data:
+                        tenders.append(tender_data)
+                        print(f"Added tender: {tender_data.get('title', 'Unnamed tender')}")
+                
+                except Exception as e:
+                    print(f"Error extracting tender data: {str(e)}")
+                    continue
+                
+            print(f"Successfully scraped {len(tenders)} tenders")
+            return tenders
+
+        except Exception as e:
+            print(f"Error during scraping: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+
+### API ENDPOINTS
 
 @app.get("/health")
 async def health_check():
@@ -234,6 +322,46 @@ async def login_to_vendor_panel(request: LoginRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during login: {str(e)}")
 
+
+@app.post("/scrape", response_model=List[Dict])
+async def scrape_vendor_panel_tenders(request: ScrapeRequest):
+    """
+    Endpoint to login to VendorPanel and scrape tender information
+    """
+    scraper = TenderScraper(use_selenium=True)
+    
+    try:
+        print(f"Starting login process for: {request.email}")
+        login_success = await scraper._login_(
+            email=request.email,
+            password=request.password,
+            login_url=str(request.login_url)
+        )
+        
+        if not login_success:
+            raise HTTPException(status_code=401, detail="Login failed")
+        
+        print("Login successful, proceeding to scrape tenders")
+        tenders = await scraper.scrape_tenders(str(request.target_url))
+        
+        if not tenders:
+            return []
+        
+        return tenders
+    
+    except Exception as e:
+        print(f"Error during scraping process: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error during scraping: {str(e)}")
+    finally:
+        # Clean up Selenium resources
+        if hasattr(scraper, 'driver'):
+            try:
+                scraper.driver.quit()
+                print("WebDriver closed successfully")
+            except Exception as cleanup_error:
+                print(f"Error closing WebDriver: {str(cleanup_error)}")
 
 
 
