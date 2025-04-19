@@ -233,8 +233,11 @@ async def login_to_vendor_panel(request: LoginRequest):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during login: {str(e)}")
-    
 
+
+
+
+#Uvicorn API local testing creation
 if __name__ == "__main__":
     # Determine port - use environment variable if available
     port = int(os.environ.get("PORT", 8080))
