@@ -233,7 +233,7 @@ class TenderScraper:
                 EC.any_of(
                         EC.presence_of_element_located((By.CSS_SELECTOR, ".dashboard-container")),
                         EC.presence_of_element_located((By.CSS_SELECTOR, ".user-profile")),
-                        EC.url_contains("Alerts:PublicTenders")
+                        EC.url_contains("Alerts:PublicTenders")   #Last flag to see if we are in the right page
                     ))
             print("Page loaded successfully")
 
@@ -245,12 +245,12 @@ class TenderScraper:
             tenders = []
 
             # search for all the containers with the tenders
-            tender_containers = soup.select('.stdAlertResultsNameCell')  #using the name of the class to get the containers
-            print(f"Found {len(tender_containers)} tender containers")
+            tender_info_containers = soup.select('.stdAlertResultsNameCell')  #using the name of the class to get the containers
+            print(f"Found {len(tender_info_containers)} tender containers")
 
-            
+                        
             # Loop through each container and extract the data
-            for container in tender_containers:
+            for container in tender_info_containers:
                 tender_data= {} # Dictionary to store tender data
 
                 try: 
@@ -266,17 +266,51 @@ class TenderScraper:
                     # Tender block information
                     info_block = container.select_one('.alertResultInfoBlock')
                     if info_block:
-                        text_spans = list(info_block.stripped_strings)
-                        if len(text_spans) >= 4:
-                            tender_data['tender_org'] = text_spans[0]
-                            tender_data['tender_location'] = text_spans[1]
-                            tender_data['tender_postcode'] = text_spans[2]
-                        else:
-                            print(f"Unexpected text content: {text_spans}")
+                        main_content = info_block.select_one('span:not(.alertResultAvatarBlock)')
+
+                        if main_content:
+                            full_text = str(main_content)
+
+                            parts = full_text.split('<br/>')
+
+                            if len(parts) >= 1:
+                                tender_data['tender_org'] = BeautifulSoup(parts[0], 'html.parser').get_text(strip=True)
+
+                            if len(parts) >= 2:
+                                # Second part is location
+                                tender_data['tender_location'] = BeautifulSoup(parts[1], 'html.parser').get_text(strip=True)
+                                    
+                            if len(parts) >= 3:
+                                # Third part is postcode and country
+                                postcode_text = BeautifulSoup(parts[2], 'html.parser').get_text(strip=True)
+                                # Split by space to separate postcode from country
+                                postcode_parts = postcode_text.split(' ', 1)
+                                tender_data['tender_postcode'] = postcode_parts[0]
+
+                    # Date extraction
+                    date_block = container.find_next_sibling('td', class_ = 'stdAlertResultsActionCell')
+                    if not date_block: 
+                        parent_row = container.parent
+                        if parent_row:
+                           date_block = parent_row.select_one('.stdAlertResultsActionCell') 
+
+                    if date_block:
+                        date_info = date_block.select_one('.alertResultsActionInfoContainer')
+                        if date_info:
+                            date_text = date_info.get_text(strip=True)
+                            
+                            if "CLOSES:" in date_text:
+                                tender_closing_date = date_text.split("CLOSES:", 1)[1].strip()
+                                
+                                date_time_parts = tender_closing_date.split(' ', 1)
+                                if len(date_time_parts) >= 2:
+                                    tender_data['tender_closing_date'] = date_time_parts[0].strip()
+                                    tender_data['tender_closing_time'] = date_time_parts[1].strip() 
+
 
                     if tender_data:
                         tenders.append(tender_data)
-                        print(f"Added tender: {tender_data.get('title', 'Unnamed tender')}")
+                        print(f"Added tender: {tender_data.get('tender_title', 'Unnamed tender')}")
                 
                 except Exception as e:
                     print(f"Error extracting tender data: {str(e)}")
