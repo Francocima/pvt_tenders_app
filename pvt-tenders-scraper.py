@@ -44,6 +44,12 @@ class ScrapeRequest(BaseModel):
     password: str
     target_url: HttpUrl
 
+class ScrapeTenderDescription(BaseModel):
+    login_url: str
+    tender_id: str
+    email: str
+    password: str
+
 
 #Scraper creation
 
@@ -326,7 +332,78 @@ class TenderScraper:
         return []
 
 
+    # Scraper for the tender description
 
+    async def scrape_tender_description(self, tender_id: str) -> Dict:
+        
+        tender_details_url =  f"https://www.vendorpanel.com.au/Members/VendorPreviewOpportunity.aspx?opportunityId={tender_id}"
+
+        try: 
+            print(f"Navigating to the tender details page: {tender_details_url}")
+
+            self.driver.get(tender_details_url)
+
+            WebDriverWait(self.driver, self.timeout).until(
+            EC.any_of(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".OpportunityPreviewRow")),
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
+                EC.url_contains("VendorPreviewOpportunity")
+            ))   #Last flag to see if we are in the right page
+            
+            print("Page loaded successfully")
+
+            # get the page source and parse it with BS4
+            page_source = self.driver.page_source
+            soup = BeautifulSoup(page_source, 'html.parser')            
+                        
+            # List to store tender information
+            tender_details = {}
+
+            opportunity_rows = soup.find_all('tr', class_='OpportunityPreviewRow')
+
+            for row in opportunity_rows:
+                # Look for the row that contains dates
+                date_sections = row.find_all('div', class_='opportunityPreviewInnerRow')
+                
+                for section in date_sections:
+                    heading = section.find('div', class_='opportunityPreviewMinHeading')
+                    content = section.find('div', class_='opportunityPreviewContent')
+                    
+                    if heading and content:
+                        heading_text = heading.text.strip()
+                        
+                        # Extract just the date part without the timezone info
+                        content_text = content.text.strip()
+                        if "(" in content_text:
+                            content_text = content_text.split("(")[0].strip()
+                        
+                        # Get the opening date
+                        if heading_text == "Opens":
+                            tender_details['tender_opening_date'] = content_text
+                            print(f"Found opening date: {content_text}")
+                        
+                        # Get the expected decision date
+                        elif heading_text == "Expected decision":
+                            tender_details['tender_decision_date'] = content_text
+                            print(f"Found decision date: {content_text}")
+                
+                # Look for the details section
+                max_heading = row.find('div', class_='opportunityPreviewMaxHeading')
+                if max_heading and "What the buyer is requesting" in max_heading.text:
+                    details_section = row.find('div', class_='opportunityPreviewContent')
+                    if details_section:
+                        tender_details['tender_details'] = details_section.text.strip()
+                        print(f"Found details section: {details_section.text.strip()[:50]}...")
+
+            return tender_details
+                    
+        except Exception as e:
+            print(f"Error during tender details scraping: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
+        
+        
 ### API ENDPOINTS
 
 @app.get("/health")
@@ -397,6 +474,48 @@ async def scrape_vendor_panel_tenders(request: ScrapeRequest):
             except Exception as cleanup_error:
                 print(f"Error closing WebDriver: {str(cleanup_error)}")
 
+
+
+@app.post("/scrape_description", response_model=Dict)
+async def scrape_tender_description(request: ScrapeTenderDescription):
+    """
+    Endpoint to scrape specific tender details: opening date, decision date, and details
+    """  
+    scraper = TenderScraper(use_selenium=True)
+
+    try:
+        print(f"Starting login process for: {request.email}")
+        login_success = await scraper._login_(
+            email=request.email,
+            password=request.password,
+            login_url=str(request.login_url)
+        )
+
+        if not login_success:
+            raise HTTPException(status_code=401, detail="Login failed")
+        
+        print("Login successful, proceeding to scrape tender details")
+
+        tender_details = await scraper.scrape_tender_description(str(request.tender_id))
+
+        if not tender_details or len(tender_details) <= 1:  # Only has tender_id
+            raise HTTPException(status_code=404, detail="No tender details found")
+        
+        return tender_details
+
+    except Exception as e:
+        print(f"Error during scraping process: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error during scraping: {str(e)}")
+    finally:
+        # Clean up Selenium resources
+        if hasattr(scraper, 'driver'):
+            try:
+                scraper.driver.quit()
+                print("WebDriver closed successfully")
+            except Exception as cleanup_error:
+                print(f"Error closing WebDriver: {str(cleanup_error)}")
 
 
 #Uvicorn API local testing creation
