@@ -13,6 +13,7 @@ import os
 from datetime import datetime
 import random
 import selenium.webdriver as webdriver
+import boto3
 
 #import all selenium imports
 from selenium import webdriver
@@ -45,6 +46,12 @@ class ScrapeRequest(BaseModel):
     target_url: HttpUrl
 
 class ScrapeTenderDescription(BaseModel):
+    login_url: str
+    tender_id: str
+    email: str
+    password: str
+
+class ScrapeDownloadFiles(BaseModel):
     login_url: str
     tender_id: str
     email: str
@@ -403,7 +410,168 @@ class TenderScraper:
             traceback.print_exc()
             return []
         
+    async def scrape_download_files(self, tender_id: str) -> List[Dict]:
+        """
+        Scrapes download files from the specified tender ID.
         
+        Args:
+            tender_id: The ID of the tender to scrape files from
+
+        """
+        # Use a temporary directory for downloads
+        temp_download_folder = os.path.join(os.getcwd(), 'temp_downloads', tender_id)
+        os.makedirs(temp_download_folder, exist_ok=True)
+        
+        # Set Chrome download preferences
+        self.driver.command_executor._commands["send_command"] = ("POST", '/session/$sessionId/chromium/send_command')
+        params = {
+            'cmd': 'Page.setDownloadBehavior',
+            'params': {
+                'behavior': 'allow',
+                'downloadPath': temp_download_folder
+            }
+        }
+        self.driver.execute("send_command", params)
+        
+        tender_files_url = f"https://www.vendorpanel.com.au/Members/iFramePopModal.aspx?pageSrc=/Members/VendorDownloadOpportunityPackage.aspx|||opportunityId={tender_id}&amp;width=780px&amp;height=300px"
+
+        downloaded_files = []
+        uploaded_files = []
+
+        try:
+            print(f"Navigating to the tender files page: {tender_files_url}")
+            self.driver.get(tender_files_url)
+
+            # Wait for either the download button or content to appear
+            WebDriverWait(self.driver, self.timeout).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.ID, "btnGo")),
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
+                    EC.url_contains("VendorDownloadOpportunityPackage")
+                )
+            )
+            
+            print("Page loaded successfully")
+
+            # Try to find and click the download button
+            try:
+                download_button = WebDriverWait(self.driver, 20).until(
+                    EC.presence_of_element_located((By.ID, "btnGo"))
+                )
+                
+                # Now wait until it's actually VISIBLE
+                WebDriverWait(self.driver, 10).until(
+                    EC.visibility_of(download_button)
+                )
+
+                print("Button is present and visible, clicking via JavaScript...")
+                self.driver.execute_script("arguments[0].click();", download_button)
+                
+                # Wait for download to complete
+                print("Waiting for download to complete...")
+                time.sleep(15)  # Give it time to download
+                
+                # Get list of files in the download directory
+                downloaded_files = [os.path.join(temp_download_folder, f) for f in os.listdir(temp_download_folder) 
+                                if os.path.isfile(os.path.join(temp_download_folder, f))]
+                
+                print(f"Downloaded {len(downloaded_files)} files")
+                
+                # Upload files to Digital Ocean Spaces
+                if downloaded_files:
+                    uploaded_files = self._upload_to_spaces(downloaded_files, tender_id)
+                
+                return uploaded_files
+                
+            except TimeoutException:
+                print("No download button found")
+                # Check if there's information about why download isn't available
+                page_source = self.driver.page_source
+                soup = BeautifulSoup(page_source, 'html.parser')
+                info_text = soup.select_one('.opportunityPreviewContent')
+                if info_text:
+                    print(f"Download info: {info_text.text.strip()}")
+                return []
+
+        except Exception as e:
+            print(f"Error during file download: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
+        
+        finally:
+            # Clean up temporary files
+            for file_path in downloaded_files:
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+
+    def _upload_to_spaces(self, file_paths, tender_id):
+        """
+        Uploads files to Digital Ocean Spaces.
+        
+        Args:
+            file_paths: List of local file paths to upload
+            tender_id: The tender ID to use for folder naming
+            
+        Returns:
+            List of dictionaries with file information
+        """
+        # Digital Ocean Spaces configuration -> in the future store the keys in a CDS scheme in snowflake
+        spaces_region = 'syd1'  
+        spaces_name = 'tenders'  
+        spaces_endpoint = f'https://{spaces_name}.{spaces_region}.digitaloceanspaces.com' 
+        spaces_access_key = 'DO80183FAJ87LC9ULBXZ'
+        spaces_secret_key = 'vTImA7VBpIaeLryF+ZJ+m59IX7zlGyoqqIRCIKQ8i74'
+        
+        # Initialize the S3 client for Spaces
+        session = boto3.session.Session()
+        client = session.client('s3',
+                            region_name=spaces_region,
+                            endpoint_url=spaces_endpoint,
+                            aws_access_key_id=spaces_access_key,
+                            aws_secret_access_key=spaces_secret_key)
+        
+        uploaded_file_info = []
+        
+        for file_path in file_paths:
+            file_name = os.path.basename(file_path)
+            
+            # Create the key (path) in Spaces
+            spaces_key = f"tenders/{tender_id}/{file_name}"
+            
+            try:
+                # Upload file to Spaces
+                client.upload_file(
+                    file_path,
+                    spaces_name,
+                    spaces_key,
+                    ExtraArgs={'ACL': 'public-read'}  # Set to 'public-read' if you want files to be publicly accessible
+                )
+                
+                # Generate the URL for the uploaded file
+                file_url = f"https://{spaces_name}.{spaces_region}.digitaloceanspaces.com/{spaces_key}"
+                
+                # Create file info dictionary
+                file_info = {
+                    'tender_id': tender_id,
+                    'file_name': file_name,
+                    'file_url': file_url,
+                    'spaces_key': spaces_key,
+                    'uploaded_at': datetime.now().isoformat()
+                }
+                
+                uploaded_file_info.append(file_info)
+                print(f"Uploaded {file_name} to Digital Ocean Spaces")
+                
+            except Exception as e:
+                print(f"Error uploading {file_name} to Digital Ocean Spaces: {str(e)}")
+        
+        return uploaded_file_info
+
+
+
 ### API ENDPOINTS
 
 @app.get("/health")
@@ -432,7 +600,6 @@ async def login_to_vendor_panel(request: LoginRequest):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during login: {str(e)}")
-
 
 @app.post("/scrape", response_model=List[Dict])
 async def scrape_vendor_panel_tenders(request: ScrapeRequest):
@@ -473,8 +640,6 @@ async def scrape_vendor_panel_tenders(request: ScrapeRequest):
                 print("WebDriver closed successfully")
             except Exception as cleanup_error:
                 print(f"Error closing WebDriver: {str(cleanup_error)}")
-
-
 
 @app.post("/scrape_description", response_model=Dict)
 async def scrape_tender_description(request: ScrapeTenderDescription):
@@ -517,6 +682,46 @@ async def scrape_tender_description(request: ScrapeTenderDescription):
             except Exception as cleanup_error:
                 print(f"Error closing WebDriver: {str(cleanup_error)}")
 
+@app.post("/scrape_download_files", response_model=List[Dict])
+async def download_tender_files(request: ScrapeDownloadFiles):
+    """
+    Endpoint to download files for a specific tender and upload to Digital Ocean Spaces
+    """
+    scraper = TenderScraper(use_selenium=True)
+
+    try:
+        print(f"Starting login process for: {request.email}")
+        login_success = await scraper._login_(
+            email=request.email,
+            password=request.password,
+            login_url=str(request.login_url)
+        )
+
+        if not login_success:
+            raise HTTPException(status_code=401, detail="Login failed")
+        
+        print("Login successful, proceeding to download tender files")
+
+        uploaded_files = await scraper.scrape_download_files(str(request.tender_id))
+
+        if not uploaded_files:
+            return []
+        
+        return uploaded_files
+
+    except Exception as e:
+        print(f"Error during file download process: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error during file download: {str(e)}")
+    finally:
+        # Clean up Selenium resources
+        if hasattr(scraper, 'driver'):
+            try:
+                scraper.driver.quit()
+                print("WebDriver closed successfully")
+            except Exception as cleanup_error:
+                print(f"Error closing WebDriver: {str(cleanup_error)}")
 
 #Uvicorn API local testing creation
 if __name__ == "__main__":
