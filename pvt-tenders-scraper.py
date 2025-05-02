@@ -244,9 +244,9 @@ class TenderScraper:
             
             WebDriverWait(self.driver, self.timeout).until(
                 EC.any_of(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".dashboard-container")),
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".user-profile")),
-                        EC.url_contains("Alerts:PublicTenders")   #Last flag to see if we are in the right page
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".tendersTableSection")),
+                        EC.presence_of_element_located((By.ID, "UpdatePanel1")),
+                        EC.url_contains("do=Tenders:AllTenders")   #Last flag to see if we are in the right page
                     ))
             print("Page loaded successfully")
 
@@ -258,7 +258,7 @@ class TenderScraper:
             tenders = []
 
             # search for all the containers with the tenders
-            tender_info_containers = soup.select('.stdAlertResultsNameCell')  #using the name of the class to get the containers
+            tender_info_containers = soup.find_all('tr', id=lambda x: x and x.isdigit())  #using the name of the class to get the containers
             print(f"Found {len(tender_info_containers)} tender containers")
 
                         
@@ -268,13 +268,15 @@ class TenderScraper:
 
                 try: 
                     # tender title
-                    tender_title = container.select_one('.alertResultName')
+                    tender_title = container.select_one('tenderName')
                     if tender_title:
                         tender_data['tender_title'] = tender_title.text.strip()
+                        print(f"Found tender title: {tender_data['tender_title']}")
 
-                    tender_id = container.select_one('a')['id']
+                    tender_id = container.get('id')
                     if tender_id:
                         tender_data['tender_id'] = tender_id
+                        print(f"Found tender ID: {tender_id}")
                     
                     # Tender block information
                     info_block = container.select_one('.alertResultInfoBlock')
