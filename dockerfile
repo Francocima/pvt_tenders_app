@@ -44,7 +44,7 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key
     && rm -rf /var/lib/apt/lists/*
 
 # Install ChromeDriver
-RUN wget https://storage.googleapis.com/chrome-for-testing-public/134.0.6998.165/linux64/chromedriver-linux64.zip -P /tmp \
+RUN wget https://storage.googleapis.com/chrome-for-testing-public/136.0.7103.59/linux64/chromedriver-linux64.zip -P /tmp \
     && unzip /tmp/chromedriver-linux64.zip -d /usr/local/bin/ \
     && rm /tmp/chromedriver-linux64.zip \
     && chmod +x /usr/local/bin/chromedriver-linux64/chromedriver \
@@ -71,6 +71,3 @@ RUN chmod +x /root/.wdm/drivers/chromedriver/linux64/*/chromedriver-linux64/chro
 
 # Expose the port the app runs on
 EXPOSE 8080
-
-# Command to run the application
-CMD ["uvicorn", "pvt-tenders-scraper:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -104,7 +104,7 @@ class TenderScraper:
         chromedriver_path = '/usr/local/bin/chromedriver'
         
         self.driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),  # change to chromedriver_path to use in sevalla
+            service=Service(chromedriver_path),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
             options=chrome_options
         )
             
@@ -218,125 +218,154 @@ class TenderScraper:
             print(f"Login failed with error: {str(e)}")
             return False
     
+    
     #Scraper function to get the tenders from the page
 
     async def scrape_tenders(self, target_url: str) -> List[Dict]:
-
         """
         Scrapes tender information from the specified URL after login.
         
         Args:
             target_url: The URL to scrape data from
-            
+                
         Returns:
             List[Dict]: A list of dictionaries containing tender information
         """
-        #Checkpoint to verify if the driver is initialized
+        # Checkpoint to verify if the driver is initialized
         if not hasattr(self, 'driver'):
             print("Driver not initialized. Please login first.")
             return []
-
+        
         try:
             print(f"Scraping tenders from: {target_url}")
             self.driver.get(target_url)
 
-            # Wait for the page to load - See if the URL matches with the correct tenders_url
-            
+            # Wait for the page to load
             WebDriverWait(self.driver, self.timeout).until(
                 EC.any_of(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".dashboard-container")),
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".user-profile")),
-                        EC.url_contains("Alerts:PublicTenders")   #Last flag to see if we are in the right page
-                    ))
+                    EC.presence_of_element_located((By.TAG_NAME, "body")),
+                    EC.url_contains("do=Tenders:AllTenders")
+            ))
             print("Page loaded successfully")
 
-            # get the page source and parse it with BS4
-            page_source = self.driver.page_source
-            soup = BeautifulSoup(page_source, 'html.parser')
+            time.sleep(3)  # Allow dynamic content to load
             
             # List to store tender information
             tenders = []
+            current_page = 1
+            
+            while True:
+                print(f"Processing page {current_page}")
+                
+                # Get the page source and parse it with BS4
+                page_source = self.driver.page_source
+                soup = BeautifulSoup(page_source, 'html.parser')
+                
+                # Look for tender elements - rows with numeric IDs
+                rows_with_ids = soup.find_all('tr', id=True)
+                print(f"Found {len(rows_with_ids)} table rows with IDs")
+            
+                numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
+                print(f"Found {len(numeric_id_rows)} table rows with numeric IDs")
 
-            # search for all the containers with the tenders
-            tender_info_containers = soup.select('.stdAlertResultsNameCell')  #using the name of the class to get the containers
-            print(f"Found {len(tender_info_containers)} tender containers")
-
-                        
-            # Loop through each container and extract the data
-            for container in tender_info_containers:
-                tender_data= {} # Dictionary to store tender data
-
-                try: 
-                    # tender title
-                    tender_title = container.select_one('.alertResultName')
-                    if tender_title:
-                        tender_data['tender_title'] = tender_title.text.strip()
-
-                    tender_id = container.select_one('a')['id']
-                    if tender_id:
-                        tender_data['tender_id'] = tender_id
+                tender_info_containers = []
+                if numeric_id_rows:
+                    print("Using rows with numeric IDs")
+                    tender_info_containers = numeric_id_rows
+                else:
+                    print("No tender rows found on this page")
+                    break
                     
-                    # Tender block information
-                    info_block = container.select_one('.alertResultInfoBlock')
-                    if info_block:
-                        main_content = info_block.select_one('span:not(.alertResultAvatarBlock)')
+                # Process tenders on current page
+                page_tenders_processed = 0
+                for container in tender_info_containers:
+                    tender_data = {}  # Dictionary to store tender data
 
-                        if main_content:
-                            full_text = str(main_content)
+                    try: 
+                        # Extract tender ID
+                        tender_id = container.get('id')
+                        if tender_id:
+                            tender_data['tender_id'] = tender_id
+                        
+                        # Try different selectors for tender title
+                        title_selectors = [
+                            '.tenderName', '.alertResultTitle', 
+                            'a', 'td a', 'td:first-child a', '.title', 'h3', 'h4'
+                        ]
+                        
+                        for selector in title_selectors:
+                            title_element = None
+                            try:
+                                if selector.startswith('.') or selector.startswith('#') or ' ' in selector:
+                                    title_element = container.select_one(selector)
+                                else:
+                                    title_element = container.find(selector)
 
-                            parts = full_text.split('<br/>')
+                                if title_element and title_element.text.strip():
+                                    tender_data['tender_title'] = title_element.text.strip()
+                                    break
+                            except:
+                                continue
 
-                            if len(parts) >= 1:
-                                tender_data['tender_org'] = BeautifulSoup(parts[0], 'html.parser').get_text(strip=True)
-
-                            if len(parts) >= 2:
-                                # Second part is location
-                                tender_data['tender_location'] = BeautifulSoup(parts[1], 'html.parser').get_text(strip=True)
-                                    
-                            if len(parts) >= 3:
-                                # Third part is postcode and country
-                                postcode_text = BeautifulSoup(parts[2], 'html.parser').get_text(strip=True)
-                                # Split by space to separate postcode from country
-                                postcode_parts = postcode_text.split(' ', 1)
-                                tender_data['tender_postcode'] = postcode_parts[0]
-
-                    # Date extraction
-                    date_block = container.find_next_sibling('td', class_ = 'stdAlertResultsActionCell')
-                    if not date_block: 
-                        parent_row = container.parent
-                        if parent_row:
-                           date_block = parent_row.select_one('.stdAlertResultsActionCell') 
-
-                    if date_block:
-                        date_info = date_block.select_one('.alertResultsActionInfoContainer')
-                        if date_info:
-                            date_text = date_info.get_text(strip=True)
-                            
-                            if "CLOSES:" in date_text:
-                                tender_closing_date = date_text.split("CLOSES:", 1)[1].strip()
+                        # Tender block information
+                        info_block = container.select_one('.tenderBody')
+                        if info_block:
+                            rows = info_block.select('.tenderDetailsRow')
+                            for row in rows:
+                                label_span = row.select_one('.tenderDetailsLabel')
+                                value_spans = row.find_all('span')
                                 
-                                date_time_parts = tender_closing_date.split(' ', 1)
-                                if len(date_time_parts) >= 2:
-                                    tender_data['tender_closing_date'] = date_time_parts[0].strip()
-                                    tender_data['tender_closing_time'] = date_time_parts[1].strip() 
+                                if label_span and len(value_spans) > 1:
+                                    label = label_span.get_text(strip=True)
+                                    value = value_spans[1].get_text(strip=True)
 
+                                    if label == "Closing:":
+                                        tender_data['tender_closing_date'] = value
+                                    elif label == "Issued by:":
+                                        tender_data['organisation'] = value
+                                        
+                        if tender_data and 'tender_id' in tender_data:  # Only add if we have at least an ID
+                            tenders.append(tender_data)
+                            page_tenders_processed += 1
 
-                    if tender_data:
-                        tenders.append(tender_data)
-                        print(f"Added tender: {tender_data.get('tender_title', 'Unnamed tender')}")
+                    except Exception as e:
+                        print(f"Error extracting tender data: {str(e)}")
+                        continue
+                        
+                print(f"Processed {page_tenders_processed} tenders on page {current_page}")
                 
-                except Exception as e:
-                    print(f"Error extracting tender data: {str(e)}")
-                    continue
-                
-            print(f"Successfully scraped {len(tenders)} tenders")
+                # Attempt to navigate to the next page
+                try:
+                        # Locate the pagination container
+                    pagination = self.driver.find_element(By.CLASS_NAME, "dt-custom-paging")
+                    buttons = pagination.find_elements(By.TAG_NAME, "button")
+                    
+                    if len(buttons) >= 4:
+                        next_button = buttons[2]  # Third button is "Next"
+                        if "disabled" not in next_button.get_attribute("class") and not next_button.get_attribute("disabled"):
+                            time.sleep(3)  # Wait for the next page to load
+                            self.driver.execute_script("arguments[0].click();", next_button)
+                            current_page += 1
+                            time.sleep(3)  # Wait for the next page to load
+                        else:
+                            print(f"Next button is disabled. End of pagination at page {current_page}")
+                            break
+                    else:
+                        print("Pagination buttons not found or malformed.")
+                        break
+                    
+                except TimeoutException:
+                    print(f"No more pages to scrape (next button not found), ended at page {current_page}")
+                    break
+                                    
+            print(f"Successfully scraped {len(tenders)} tenders across {current_page} pages")
             return tenders
 
         except Exception as e:
             print(f"Error during scraping: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return []
+            import traceback
+            traceback.print_exc()
+            return []
 
 
     # Scraper for the tender description
@@ -409,7 +438,9 @@ class TenderScraper:
             import traceback
             traceback.print_exc()
             return []
-        
+
+
+    # File downloader WIP
     async def scrape_download_files(self, tender_id: str) -> List[Dict]:
         """
         Scrapes download files from the specified tender ID.
