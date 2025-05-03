@@ -218,6 +218,7 @@ class TenderScraper:
             print(f"Login failed with error: {str(e)}")
             return False
     
+    
     #Scraper function to get the tenders from the page
 
     async def scrape_tenders(self, target_url: str) -> List[Dict]:
@@ -437,7 +438,9 @@ class TenderScraper:
             import traceback
             traceback.print_exc()
             return []
-        
+
+
+    # File downloader WIP
     async def scrape_download_files(self, tender_id: str) -> List[Dict]:
         """
         Scrapes download files from the specified tender ID.
