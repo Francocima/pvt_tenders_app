@@ -241,14 +241,14 @@ class TenderScraper:
             self.driver.get(target_url)
 
             # Wait for the page to load
-            WebDriverWait(self.driver, self.timeout).until(
-                EC.any_of(
-                    EC.presence_of_element_located((By.TAG_NAME, "body")),
-                    EC.url_contains("do=Tenders:AllTenders")
-            ))
+            #WebDriverWait(self.driver, self.timeout).until(
+                #EC.any_of(
+                    #EC.presence_of_element_located((By.TAG_NAME, "body")),
+                    #EC.url_contains("do=Tenders:AllTenders")))
+            
             print("Page loaded successfully")
 
-            time.sleep(3)  # Allow dynamic content to load
+            time.sleep(2)  # Allow dynamic content to load
             
             # List to store tender information
             tenders = []
@@ -368,7 +368,7 @@ class TenderScraper:
             return []
 
 
-    # Scraper for the tender description
+    # Scraper for the tender description + downloader
 
     async def scrape_tender_description(self, tender_id: str) -> Dict:
         
@@ -441,7 +441,7 @@ class TenderScraper:
 
 
     # File downloader WIP
-    async def scrape_download_files(self, tender_id: str) -> List[Dict]:
+    ### async def scrape_download_files(self, tender_id: str) -> List[Dict]:
         """
         Scrapes download files from the specified tender ID.
         
@@ -538,7 +538,7 @@ class TenderScraper:
                 except:
                     pass
 
-    def _upload_to_spaces(self, file_paths, tender_id):
+    ### def _upload_to_spaces(self, file_paths, tender_id):
         """
         Uploads files to Digital Ocean Spaces.
         
