@@ -44,6 +44,7 @@ class ScrapeRequest(BaseModel):
     email: str
     password: str
     target_url: HttpUrl
+    webhook_url: HttpUrl
 
 class ScrapeTenderDescription(BaseModel):
     login_url: str
@@ -602,6 +603,39 @@ class TenderScraper:
         return uploaded_file_info
 
 
+    async def send_to_webhook(self, webhook_url: str, tenders: List[Dict]):
+        """
+        Send scraped data to a webhook URL
+        
+        Args:
+            webhook_url: The URL to send the data to
+            data: The data to send
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {
+                    'Content-Type': 'application/json'
+                }
+                
+                # Add a timestamp to the data
+                payload = {
+                    'timestamp': datetime.now().isoformat(),
+                    'tenders': tenders
+                }
+                
+                print(f"Sending data to webhook: {webhook_url}")
+                async with session.post(webhook_url, headers=headers, json=payload) as response:
+                    if response.status == 200:
+                        print(f"Successfully sent data to webhook. Status: {response.status}")
+                        return True
+                    else:
+                        print(f"Failed to send data to webhook. Status: {response.status}")
+                        return False
+                        
+        except Exception as e:
+            print(f"Error sending data to webhook: {str(e)}")
+            return False
+
 
 ### API ENDPOINTS
 
@@ -632,31 +666,63 @@ async def login_to_vendor_panel(request: LoginRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during login: {str(e)}")
 
-@app.post("/scrape", response_model=List[Dict])
-async def scrape_vendor_panel_tenders(request: ScrapeRequest):
+@app.post("/scrape")
+
+async def scrape_vendor_panel_tenders(request: ScrapeRequest, background_tasks: BackgroundTasks):
+    """
+    Endpoint to login to VendorPanel and scrape tender information.
+    Initially returns a simple message, then sends data to webhook if provided.
+    """
+    # First, return a simple message immediately
+    if request.webhook_url:
+        # Schedule the scraping to happen in the background
+        background_tasks.add_task(
+            scrape_vendor_panel_tenders,
+            request.email,
+            request.password,
+            str(request.login_url),
+            str(request.target_url),
+            str(request.webhook_url)
+        )
+        
+        return {
+            "status": "processing",
+            "message": "The scraping process has started. Results will be sent to the provided webhook URL when complete.",
+            "webhook_url": str(request.webhook_url)
+        }
+    else:
+        # If no webhook is provided, return a message asking for one
+        return {
+            "status": "error",
+            "message": "Please provide a webhook_url to receive the scraped data",
+        }
+
+async def scrape_vendor_panel_tenders(email: str, password: str, login_url: str, target_url: str, webhook_url: str):
     """
     Endpoint to login to VendorPanel and scrape tender information
     """
     scraper = TenderScraper(use_selenium=True)
     
     try:
-        print(f"Starting login process for: {request.email}")
+        print(f"Starting login process for: {email}")
         login_success = await scraper._login_(
-            email=request.email,
-            password=request.password,
-            login_url=str(request.login_url)
+            email=email,
+            password=password,
+            login_url=str(login_url)
         )
         
         if not login_success:
             raise HTTPException(status_code=401, detail="Login failed")
         
         print("Login successful, proceeding to scrape tenders")
-        tenders = await scraper.scrape_tenders(str(request.target_url))
+        tenders = await scraper.scrape_tenders(str(target_url))
         
         if not tenders:
+            print("No tenders found")
+            await scraper.send_to_webhook(webhook_url, tenders)
             return []
         
-        return tenders
+        await scraper.send_to_webhook(webhook_url, tenders)
     
     except Exception as e:
         print(f"Error during scraping process: {str(e)}")
@@ -761,3 +827,4 @@ if __name__ == "__main__":
     
     # Run the API server
     uvicorn.run("pvt-tenders-scraper:app", host="0.0.0.0", port=port, reload=False)
+
