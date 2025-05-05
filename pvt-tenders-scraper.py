@@ -104,7 +104,7 @@ class TenderScraper:
         chromedriver_path = '/usr/local/bin/chromedriver'
         
         self.driver = webdriver.Chrome(
-            service=Service(chromedriver_path),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
+            service=Service(ChromeDriverManager().install()),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
             options=chrome_options
         )
             
@@ -241,10 +241,10 @@ class TenderScraper:
             self.driver.get(target_url)
 
             # Wait for the page to load
-            #WebDriverWait(self.driver, self.timeout).until(
-                #EC.any_of(
-                    #EC.presence_of_element_located((By.TAG_NAME, "body")),
-                    #EC.url_contains("do=Tenders:AllTenders")))
+            WebDriverWait(self.driver, self.timeout).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.TAG_NAME, "body")),
+                    EC.url_contains("do=Tenders:AllTenders")))
             
             print("Page loaded successfully")
 
@@ -343,10 +343,10 @@ class TenderScraper:
                     if len(buttons) >= 4:
                         next_button = buttons[2]  # Third button is "Next"
                         if "disabled" not in next_button.get_attribute("class") and not next_button.get_attribute("disabled"):
-                            time.sleep(3)  # Wait for the next page to load
+                            time.sleep(5)  # Wait for the next page to load
                             self.driver.execute_script("arguments[0].click();", next_button)
                             current_page += 1
-                            time.sleep(3)  # Wait for the next page to load
+                            time.sleep(5)  # Wait for the next page to load
                         else:
                             print(f"Next button is disabled. End of pagination at page {current_page}")
                             break
