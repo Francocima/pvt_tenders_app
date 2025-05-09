@@ -105,7 +105,7 @@ class TenderScraper:
         chromedriver_path = '/usr/local/bin/chromedriver'
         
         self.driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
+            service=Service(chromedriver_path),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
             options=chrome_options
         )
             
@@ -394,7 +394,7 @@ class TenderScraper:
             soup = BeautifulSoup(page_source, 'html.parser')            
                         
             # List to store tender information
-            tender_details = {}
+            tender_details = {'tender_details_url': tender_details_url}
 
             opportunity_rows = soup.find_all('tr', class_='OpportunityPreviewRow')
 
