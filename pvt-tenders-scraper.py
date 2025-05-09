@@ -105,7 +105,7 @@ class TenderScraper:
         chromedriver_path = '/usr/local/bin/chromedriver'
         
         self.driver = webdriver.Chrome(
-            service=Service(chromedriver_path),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
+            service=Service(ChromeDriverManager().install()),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
             options=chrome_options
         )
             
@@ -424,14 +424,42 @@ class TenderScraper:
                             tender_details['tender_decision_date'] = content_text
                             print(f"Found decision date: {content_text}")
                 
-                # Look for the details section
-                max_heading = row.find('div', class_='opportunityPreviewMaxHeading')
-                if max_heading and "What the buyer is requesting" in max_heading.text:
-                    details_section = row.find('div', class_='opportunityPreviewContent')
-                    if details_section:
-                        tender_details['tender_details'] = details_section.text.strip()
-                        print(f"Found details section: {details_section.text.strip()[:50]}...")
+                
+                max_headings = row.find_all('div', class_='opportunityPreviewMaxHeading')
 
+                for max_heading in max_headings:
+                    heading_text = max_heading.text.strip()
+
+                    content_section = max_heading.find_next_sibling('div', class_='opportunityPreviewInnerRow')
+
+                    if content_section:
+                        content_div = content_section.find('div', class_='opportunityPreviewContent')
+                        if content_div:
+                            content_text = content_div.text.strip()
+
+                            if "What the buyer is requesting" in heading_text:
+                                tender_details['tender_general_details'] = content_text
+                                
+                                
+                            elif "Background information" in heading_text:
+                                tender_details['tender_background_information'] = content_text
+                                
+                                
+                            elif "Desired Outcomes" in heading_text:
+                                tender_details['tender_desired_outcomes'] = content_text
+                                
+
+                            else:
+                                # Keep the exact heading as it appears on the website
+                                tender_details[heading_text] = content_text
+                                
+           
+            required_sections = ['tender_general_details', 'tender_background_information', 'tender_desired_outcomes']
+            for section in required_sections:
+                if section not in tender_details:
+                    tender_details[section] = "Section not available"
+                    
+                
             return tender_details
                     
         except Exception as e:
