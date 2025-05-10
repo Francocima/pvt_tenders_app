@@ -448,7 +448,7 @@ class TenderScraper:
                             elif "Desired Outcomes" in heading_text:
                                 tender_details['tender_desired_outcomes'] = content_text
 
-                            elif "Attachments to this request" in heading_text:
+                            elif "Attachments" in heading_text:
                                 tender_details['tender_attachments'] = content_text
 
                             elif "Updates" in heading_text:
