@@ -105,7 +105,7 @@ class TenderScraper:
         chromedriver_path = '/usr/local/bin/chromedriver'
         
         self.driver = webdriver.Chrome(
-            service=Service(chromedriver_path),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
+            service=Service(ChromeDriverManager().install()),  # change to chromedriver_path to use in sevalla     ChromeDriverManager().install()
             options=chrome_options
         )
             
@@ -444,7 +444,9 @@ class TenderScraper:
                             elif "Background information" in heading_text:
                                 tender_details['tender_background_information'] = content_text
                                 
-                                
+                            elif "Regions of Service" in heading_text:
+                                tender_details['tender_location'] = content_text
+
                             elif "Desired Outcomes" in heading_text:
                                 tender_details['tender_desired_outcomes'] = content_text
 
