@@ -443,6 +443,16 @@ class TenderScraper:
                         elif heading_text == "Contact Details":
                             tender_details['tender_contact_details'] = content_text
                             print(f"Found contact details: {content_text}")
+
+                        elif heading_text == "WebSite":
+                            tender_details['organisation_website'] = content_text
+
+                        elif heading_text == "Emial":
+                            tender_details['organisation_email'] = content_text
+
+                        elif heading_text == "Contact Name":
+                            tender_details['organisation_contact_name'] = content_text
+                            
                 
                 
                 max_headings = row.find_all('div', class_='opportunityPreviewMaxHeading')
