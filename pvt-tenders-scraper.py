@@ -444,10 +444,10 @@ class TenderScraper:
                             tender_details['tender_contact_details'] = content_text
                             print(f"Found contact details: {content_text}")
 
-                        elif heading_text == "WebSite":
+                        elif heading_text == "WebSite:":
                             tender_details['organisation_website'] = content_text
 
-                        elif heading_text == "Emial":
+                        elif heading_text == "Email:":
                             tender_details['organisation_email'] = content_text
 
                         elif heading_text == "Contact Name":
