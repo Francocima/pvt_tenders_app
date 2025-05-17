@@ -423,6 +423,18 @@ class TenderScraper:
                         elif heading_text == "Expected decision":
                             tender_details['tender_decision_date'] = content_text
                             print(f"Found decision date: {content_text}")
+
+                        elif heading_text == "Location":
+                            tender_details['tender_location'] = content_text
+                            print(f"Found location: {content_text}")
+                        
+                        elif heading_text == "Business Info":
+                            tender_details['tender_business_info'] = content_text
+                            print(f"Found business info: {content_text}")
+
+                        elif heading_text == "Contact Details":
+                            tender_details['tender_contact_details'] = content_text
+                            print(f"Found contact details: {content_text}")
                 
                 
                 max_headings = row.find_all('div', class_='opportunityPreviewMaxHeading')
@@ -445,7 +457,7 @@ class TenderScraper:
                                 tender_details['tender_background_information'] = content_text
                                 
                             elif "Regions of Service" in heading_text:
-                                tender_details['tender_location'] = content_text
+                                tender_details['tender_region_of_service'] = content_text
 
                             elif "Desired Outcomes" in heading_text:
                                 tender_details['tender_desired_outcomes'] = content_text
