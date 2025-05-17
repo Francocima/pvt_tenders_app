@@ -337,26 +337,34 @@ class TenderScraper:
                 
                 # Attempt to navigate to the next page
                 try:
-                        # Locate the pagination container
-                    pagination = self.driver.find_element(By.CLASS_NAME, "dt-custom-paging")
+                    # Find the pagination container
+                    pagination = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CLASS_NAME, "dt-custom-paging"))
+                    )
                     buttons = pagination.find_elements(By.TAG_NAME, "button")
                     
-                    if len(buttons) >= 4:
-                        next_button = buttons[2]  # Third button is "Next"
-                        if "disabled" not in next_button.get_attribute("class") and not next_button.get_attribute("disabled"):
-                            time.sleep(5)  # Wait for the next page to load
-                            self.driver.execute_script("arguments[0].click();", next_button)
-                            current_page += 1
-                            time.sleep(5)  # Wait for the next page to load
-                        else:
-                            print(f"Next button is disabled. End of pagination at page {current_page}")
+                    # Look for the button that contains the fa-caret-right icon
+                    next_button = None
+                    for button in buttons:
+                        icon = button.find_elements(By.CLASS_NAME, "fa-caret-right")
+                        if icon:
+                            next_button = button
                             break
-                    else:
-                        print("Pagination buttons not found or malformed.")
-                        break
                     
+                    if next_button and "disabled" not in next_button.get_attribute("class") and not next_button.get_attribute("disabled"):
+                        print("Clicking next button to navigate to the next page")
+                        self.driver.execute_script("arguments[0].click();", next_button)
+                        current_page += 1
+                        time.sleep(5)  # Wait for the next page to load
+                    else:
+                        print(f"Next button is disabled or not found. End of pagination at page {current_page}")
+                        break
+                
                 except TimeoutException:
-                    print(f"No more pages to scrape (next button not found), ended at page {current_page}")
+                    print(f"No more pages to scrape (pagination container not found), ended at page {current_page}")
+                    break
+                except Exception as e:
+                    print(f"Error navigating to next page: {str(e)}")
                     break
                                     
             print(f"Successfully scraped {len(tenders)} tenders across {current_page} pages")
