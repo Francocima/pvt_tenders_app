@@ -13,7 +13,7 @@ import os
 from datetime import datetime
 import random
 import selenium.webdriver as webdriver
-import boto3
+
 
 #import all selenium imports
 from selenium import webdriver
@@ -257,17 +257,90 @@ class TenderScraper:
             
             while True:
                 print(f"Processing page {current_page}")
+            
+                # Wait for tender rows to load dynamically
+                try:
+                    print("Waiting for tender rows to load...")
+                    # Wait for at least one tr element with a numeric ID to appear
+                    WebDriverWait(self.driver, 20).until(
+                        lambda driver: driver.find_elements(By.XPATH, "//tr[@id]")
+                    )
+                    print("Tender rows detected, waiting a bit more for all content...")
+                    time.sleep(3)  # Additional time for all rows to load
+                except TimeoutException:
+                    print("Timeout waiting for tender rows to load")
+                    # Try to continue anyway in case content is there but selector is wrong
                 
                 # Get the page source and parse it with BS4
                 page_source = self.driver.page_source
                 soup = BeautifulSoup(page_source, 'html.parser')
                 
-                # Look for tender elements - rows with numeric IDs
+                # Debug: Let's see what we actually have in the HTML
+                print("=== DEBUG: Checking HTML structure ===")
+                
+                # Check for tbody elements
+                tbody_elements = soup.find_all('tbody')
+                print(f"Found {len(tbody_elements)} tbody elements")
+                
+                # Check for any tr elements at all
+                all_tr_elements = soup.find_all('tr')
+                print(f"Found {len(all_tr_elements)} total tr elements")
+                
+                # Check for tr elements with any id attribute
+                tr_with_any_id = soup.find_all('tr', id=True)
+                print(f"Found {len(tr_with_any_id)} tr elements with id attribute")
+                
+                if tr_with_any_id:
+                    print("Sample tr IDs:")
+                    for tr in tr_with_any_id[:5]:
+                        print(f"  ID: {tr.get('id')}")
+                
+                # Check for elements with class names that might contain tender info
+                tender_elements = soup.find_all(class_=lambda x: x and 'tender' in x.lower())
+                print(f"Found {len(tender_elements)} elements with 'tender' in class name")
+                
+                # Look for the specific structure we expect
+                followed_tender_divs = soup.find_all('div', class_='followedTender')
+                print(f"Found {len(followed_tender_divs)} div elements with 'followedTender' class")
+                
+                print("=== END DEBUG ===")
+                
+                # Look for tender elements - try multiple approaches
+                numeric_id_rows = []
+                
+                # Method 1: Direct search for tr with numeric IDs
                 rows_with_ids = soup.find_all('tr', id=True)
-                print(f"Found {len(rows_with_ids)} table rows with IDs")
-            
-                numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
-                print(f"Found {len(numeric_id_rows)} table rows with numeric IDs")
+                if rows_with_ids:
+                    numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
+                    print(f"Method 1: Found {len(numeric_id_rows)} tr elements with numeric IDs")
+                
+                # Method 2: If no rows found, try using Selenium to find them
+                if not numeric_id_rows:
+                    print("Method 2: Using Selenium to find tr elements with numeric IDs")
+                    try:
+                        selenium_rows = self.driver.find_elements(By.XPATH, "//tr[@id]")
+                        print(f"Selenium found {len(selenium_rows)} tr elements with id attribute")
+                        
+                        # Filter for numeric IDs
+                        numeric_selenium_rows = []
+                        for row in selenium_rows:
+                            row_id = row.get_attribute('id')
+                            if row_id and row_id.isdigit():
+                                numeric_selenium_rows.append(row)
+                        
+                        print(f"Selenium found {len(numeric_selenium_rows)} tr elements with numeric IDs")
+                        
+                        # If we found rows with Selenium, get the page source again
+                        if numeric_selenium_rows:
+                            print("Re-parsing page source after Selenium detection...")
+                            page_source = self.driver.page_source
+                            soup = BeautifulSoup(page_source, 'html.parser')
+                            rows_with_ids = soup.find_all('tr', id=True)
+                            numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
+                            print(f"After re-parsing: Found {len(numeric_id_rows)} tr elements with numeric IDs")
+                    
+                    except Exception as e:
+                            print(f"Error using Selenium to find rows: {str(e)}")
 
                 tender_info_containers = []
                 if numeric_id_rows:
@@ -275,6 +348,10 @@ class TenderScraper:
                     tender_info_containers = numeric_id_rows
                 else:
                     print("No tender rows found on this page")
+                    # Before giving up, let's try to save the HTML for debugging
+                    with open(f'debug_page_{current_page}.html', 'w', encoding='utf-8') as f:
+                        f.write(page_source)
+                    print(f"Saved page HTML to debug_page_{current_page}.html for inspection")
                     break
                     
                 # Process tenders on current page
@@ -505,168 +582,6 @@ class TenderScraper:
             return []
 
 
-    # File downloader WIP
-    ### async def scrape_download_files(self, tender_id: str) -> List[Dict]:
-        """
-        Scrapes download files from the specified tender ID.
-        
-        Args:
-            tender_id: The ID of the tender to scrape files from
-
-        """
-        # Use a temporary directory for downloads
-        temp_download_folder = os.path.join(os.getcwd(), 'temp_downloads', tender_id)
-        os.makedirs(temp_download_folder, exist_ok=True)
-        
-        # Set Chrome download preferences
-        self.driver.command_executor._commands["send_command"] = ("POST", '/session/$sessionId/chromium/send_command')
-        params = {
-            'cmd': 'Page.setDownloadBehavior',
-            'params': {
-                'behavior': 'allow',
-                'downloadPath': temp_download_folder
-            }
-        }
-        self.driver.execute("send_command", params)
-        
-        tender_files_url = f"https://www.vendorpanel.com.au/Members/iFramePopModal.aspx?pageSrc=/Members/VendorDownloadOpportunityPackage.aspx|||opportunityId={tender_id}&amp;width=780px&amp;height=300px"
-
-        downloaded_files = []
-        uploaded_files = []
-
-        try:
-            print(f"Navigating to the tender files page: {tender_files_url}")
-            self.driver.get(tender_files_url)
-
-            # Wait for either the download button or content to appear
-            WebDriverWait(self.driver, self.timeout).until(
-                EC.any_of(
-                    EC.presence_of_element_located((By.ID, "btnGo")),
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
-                    EC.url_contains("VendorDownloadOpportunityPackage")
-                )
-            )
-            
-            print("Page loaded successfully")
-
-            # Try to find and click the download button
-            try:
-                download_button = WebDriverWait(self.driver, 20).until(
-                    EC.presence_of_element_located((By.ID, "btnGo"))
-                )
-                
-                # Now wait until it's actually VISIBLE
-                WebDriverWait(self.driver, 10).until(
-                    EC.visibility_of(download_button)
-                )
-
-                print("Button is present and visible, clicking via JavaScript...")
-                self.driver.execute_script("arguments[0].click();", download_button)
-                
-                # Wait for download to complete
-                print("Waiting for download to complete...")
-                time.sleep(15)  # Give it time to download
-                
-                # Get list of files in the download directory
-                downloaded_files = [os.path.join(temp_download_folder, f) for f in os.listdir(temp_download_folder) 
-                                if os.path.isfile(os.path.join(temp_download_folder, f))]
-                
-                print(f"Downloaded {len(downloaded_files)} files")
-                
-                # Upload files to Digital Ocean Spaces
-                if downloaded_files:
-                    uploaded_files = self._upload_to_spaces(downloaded_files, tender_id)
-                
-                return uploaded_files
-                
-            except TimeoutException:
-                print("No download button found")
-                # Check if there's information about why download isn't available
-                page_source = self.driver.page_source
-                soup = BeautifulSoup(page_source, 'html.parser')
-                info_text = soup.select_one('.opportunityPreviewContent')
-                if info_text:
-                    print(f"Download info: {info_text.text.strip()}")
-                return []
-
-        except Exception as e:
-            print(f"Error during file download: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return []
-        
-        finally:
-            # Clean up temporary files
-            for file_path in downloaded_files:
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
-
-    ### def _upload_to_spaces(self, file_paths, tender_id):
-        """
-        Uploads files to Digital Ocean Spaces.
-        
-        Args:
-            file_paths: List of local file paths to upload
-            tender_id: The tender ID to use for folder naming
-            
-        Returns:
-            List of dictionaries with file information
-        """
-        # Digital Ocean Spaces configuration -> in the future store the keys in a CDS scheme in snowflake
-        spaces_region = 'syd1'  
-        spaces_name = 'tenders'  
-        spaces_endpoint = f'https://{spaces_name}.{spaces_region}.digitaloceanspaces.com' 
-        spaces_access_key = 'DO80183FAJ87LC9ULBXZ'
-        spaces_secret_key = 'vTImA7VBpIaeLryF+ZJ+m59IX7zlGyoqqIRCIKQ8i74'
-        
-        # Initialize the S3 client for Spaces
-        session = boto3.session.Session()
-        client = session.client('s3',
-                            region_name=spaces_region,
-                            endpoint_url=spaces_endpoint,
-                            aws_access_key_id=spaces_access_key,
-                            aws_secret_access_key=spaces_secret_key)
-        
-        uploaded_file_info = []
-        
-        for file_path in file_paths:
-            file_name = os.path.basename(file_path)
-            
-            # Create the key (path) in Spaces
-            spaces_key = f"tenders/{tender_id}/{file_name}"
-            
-            try:
-                # Upload file to Spaces
-                client.upload_file(
-                    file_path,
-                    spaces_name,
-                    spaces_key,
-                    ExtraArgs={'ACL': 'public-read'}  # Set to 'public-read' if you want files to be publicly accessible
-                )
-                
-                # Generate the URL for the uploaded file
-                file_url = f"https://{spaces_name}.{spaces_region}.digitaloceanspaces.com/{spaces_key}"
-                
-                # Create file info dictionary
-                file_info = {
-                    'tender_id': tender_id,
-                    'file_name': file_name,
-                    'file_url': file_url,
-                    'spaces_key': spaces_key,
-                    'uploaded_at': datetime.now().isoformat()
-                }
-                
-                uploaded_file_info.append(file_info)
-                print(f"Uploaded {file_name} to Digital Ocean Spaces")
-                
-            except Exception as e:
-                print(f"Error uploading {file_name} to Digital Ocean Spaces: {str(e)}")
-        
-        return uploaded_file_info
-
-
     async def send_to_webhook(self, webhook_url: str, tenders: List[Dict]):
         """
         Send scraped data to a webhook URL
@@ -699,6 +614,60 @@ class TenderScraper:
         except Exception as e:
             print(f"Error sending data to webhook: {str(e)}")
             return False
+
+
+    async def follow_button_click(self, tender_id: str):
+
+        tender_details_url =  f"https://www.vendorpanel.com.au/Members/VendorPreviewOpportunity.aspx?opportunityId={tender_id}"
+
+        try: 
+            print(f"Navigating to the tender details page: {tender_details_url}")
+
+            self.driver.get(tender_details_url)
+
+            WebDriverWait(self.driver, self.timeout).until(
+            EC.any_of(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".OpportunityPreviewRow")),
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
+                EC.url_contains("VendorPreviewOpportunity")
+            ))   #Last flag to see if we are in the right page
+            
+            print("Page loaded successfully")
+
+            # get the page source and parse it with BS4
+            page_source = self.driver.page_source
+            soup = BeautifulSoup(page_source, 'html.parser')            
+
+            try:
+                # find the follow button
+
+                follow_button = WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".iconButton"))  
+                )
+
+                if follow_button:
+                    try:
+                        follow_button.click()
+                        print("Follow button clicked successfully")
+                    except Exception as e:
+                        print(f"Error clicking follow button: {str(e)}")
+                        return False
+                else:
+                    print("Follow button not found")
+                    return False
+                
+                return f"follow button clicked successfully"
+
+            except Exception as e:
+                print(f"Error finding follow button: {str(e)}")
+                return False
+        
+        except Exception as e:
+            print(f"Error during tender details scraping: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+
 
 
 ### API ENDPOINTS
@@ -875,6 +844,47 @@ async def download_tender_files(request: ScrapeDownloadFiles):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error during file download: {str(e)}")
+    finally:
+        # Clean up Selenium resources
+        if hasattr(scraper, 'driver'):
+            try:
+                scraper.driver.quit()
+                print("WebDriver closed successfully")
+            except Exception as cleanup_error:
+                print(f"Error closing WebDriver: {str(cleanup_error)}")
+
+@app.post("/follow_button_click", response_model=Dict)
+async def follow_button_click(request: ScrapeTenderDescription):
+    """
+    Endpoint to click the follow button for a specific tender
+    """
+    scraper = TenderScraper(use_selenium=True)
+
+    try:
+        print(f"Starting login process for: {request.email}")
+        login_success = await scraper._login_(
+            email=request.email,
+            password=request.password,
+            login_url=str(request.login_url)
+        )
+
+        if not login_success:
+            raise HTTPException(status_code=401, detail="Login failed")
+        
+        print("Login successful, proceeding to click follow button")
+
+        success = await scraper.follow_button_click(str(request.tender_id))
+
+        if not success:
+            raise HTTPException(status_code=404, detail="Follow button click failed")
+        
+        return {"status": "success", "message": "Follow button clicked successfully"}
+
+    except Exception as e:
+        print(f"Error during follow button click process: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error during follow button click: {str(e)}")
     finally:
         # Clean up Selenium resources
         if hasattr(scraper, 'driver'):
