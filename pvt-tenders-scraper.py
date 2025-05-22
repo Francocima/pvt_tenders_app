@@ -13,7 +13,7 @@ import os
 from datetime import datetime
 import random
 import selenium.webdriver as webdriver
-import boto3
+
 
 #import all selenium imports
 from selenium import webdriver
@@ -257,17 +257,90 @@ class TenderScraper:
             
             while True:
                 print(f"Processing page {current_page}")
+            
+                # Wait for tender rows to load dynamically
+                try:
+                    print("Waiting for tender rows to load...")
+                    # Wait for at least one tr element with a numeric ID to appear
+                    WebDriverWait(self.driver, 20).until(
+                        lambda driver: driver.find_elements(By.XPATH, "//tr[@id]")
+                    )
+                    print("Tender rows detected, waiting a bit more for all content...")
+                    time.sleep(3)  # Additional time for all rows to load
+                except TimeoutException:
+                    print("Timeout waiting for tender rows to load")
+                    # Try to continue anyway in case content is there but selector is wrong
                 
                 # Get the page source and parse it with BS4
                 page_source = self.driver.page_source
                 soup = BeautifulSoup(page_source, 'html.parser')
                 
-                # Look for tender elements - rows with numeric IDs
+                # Debug: Let's see what we actually have in the HTML
+                print("=== DEBUG: Checking HTML structure ===")
+                
+                # Check for tbody elements
+                tbody_elements = soup.find_all('tbody')
+                print(f"Found {len(tbody_elements)} tbody elements")
+                
+                # Check for any tr elements at all
+                all_tr_elements = soup.find_all('tr')
+                print(f"Found {len(all_tr_elements)} total tr elements")
+                
+                # Check for tr elements with any id attribute
+                tr_with_any_id = soup.find_all('tr', id=True)
+                print(f"Found {len(tr_with_any_id)} tr elements with id attribute")
+                
+                if tr_with_any_id:
+                    print("Sample tr IDs:")
+                    for tr in tr_with_any_id[:5]:
+                        print(f"  ID: {tr.get('id')}")
+                
+                # Check for elements with class names that might contain tender info
+                tender_elements = soup.find_all(class_=lambda x: x and 'tender' in x.lower())
+                print(f"Found {len(tender_elements)} elements with 'tender' in class name")
+                
+                # Look for the specific structure we expect
+                followed_tender_divs = soup.find_all('div', class_='followedTender')
+                print(f"Found {len(followed_tender_divs)} div elements with 'followedTender' class")
+                
+                print("=== END DEBUG ===")
+                
+                # Look for tender elements - try multiple approaches
+                numeric_id_rows = []
+                
+                # Method 1: Direct search for tr with numeric IDs
                 rows_with_ids = soup.find_all('tr', id=True)
-                print(f"Found {len(rows_with_ids)} table rows with IDs")
-            
-                numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
-                print(f"Found {len(numeric_id_rows)} table rows with numeric IDs")
+                if rows_with_ids:
+                    numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
+                    print(f"Method 1: Found {len(numeric_id_rows)} tr elements with numeric IDs")
+                
+                # Method 2: If no rows found, try using Selenium to find them
+                if not numeric_id_rows:
+                    print("Method 2: Using Selenium to find tr elements with numeric IDs")
+                    try:
+                        selenium_rows = self.driver.find_elements(By.XPATH, "//tr[@id]")
+                        print(f"Selenium found {len(selenium_rows)} tr elements with id attribute")
+                        
+                        # Filter for numeric IDs
+                        numeric_selenium_rows = []
+                        for row in selenium_rows:
+                            row_id = row.get_attribute('id')
+                            if row_id and row_id.isdigit():
+                                numeric_selenium_rows.append(row)
+                        
+                        print(f"Selenium found {len(numeric_selenium_rows)} tr elements with numeric IDs")
+                        
+                        # If we found rows with Selenium, get the page source again
+                        if numeric_selenium_rows:
+                            print("Re-parsing page source after Selenium detection...")
+                            page_source = self.driver.page_source
+                            soup = BeautifulSoup(page_source, 'html.parser')
+                            rows_with_ids = soup.find_all('tr', id=True)
+                            numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
+                            print(f"After re-parsing: Found {len(numeric_id_rows)} tr elements with numeric IDs")
+                    
+                    except Exception as e:
+                            print(f"Error using Selenium to find rows: {str(e)}")
 
                 tender_info_containers = []
                 if numeric_id_rows:
@@ -275,6 +348,10 @@ class TenderScraper:
                     tender_info_containers = numeric_id_rows
                 else:
                     print("No tender rows found on this page")
+                    # Before giving up, let's try to save the HTML for debugging
+                    with open(f'debug_page_{current_page}.html', 'w', encoding='utf-8') as f:
+                        f.write(page_source)
+                    print(f"Saved page HTML to debug_page_{current_page}.html for inspection")
                     break
                     
                 # Process tenders on current page
@@ -560,9 +637,6 @@ class TenderScraper:
             # get the page source and parse it with BS4
             page_source = self.driver.page_source
             soup = BeautifulSoup(page_source, 'html.parser')            
-                        
-            # List to store tender information
-            tender_details = {'tender_details_url': tender_details_url}
 
             try:
                 # find the follow button
@@ -581,6 +655,8 @@ class TenderScraper:
                 else:
                     print("Follow button not found")
                     return False
+                
+                return f"follow button clicked successfully"
 
             except Exception as e:
                 print(f"Error finding follow button: {str(e)}")
