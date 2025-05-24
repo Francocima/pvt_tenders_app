@@ -499,45 +499,67 @@ class TenderScraper:
             
             # get the page source and parse it with BS4
             page_source = self.driver.page_source
-                     
+                    
 
-                        # Look for the follow button
+            # Look for the toggle container to check the current state
             try:
-                follow_button = WebDriverWait(self.driver, self.timeout).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".iconButton"))  
+                toggle_container = WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".toggleContainer"))  
                 )
-                print("Follow button found and is clickable")
+                print("Toggle container found")
+                
+                # Check the span text to determine if it's "Follow" or "Following"
+                span_element = toggle_container.find_element(By.TAG_NAME, "span")
+                span_text = span_element.text.strip()
+                
+                print(f"Current button state: {span_text}")
+                
+                if span_text == "Following:":
+                    print("Tender is already being followed. Skipping action.")
+                    return {"success": True, "message": "Tender is already being followed. No action needed.", "already_following": True}
+                
+                elif span_text == "Follow:":
+                    print("Tender is not being followed. Proceeding to click follow button.")
+                    
+                    # Now look for the clickable follow button
+                    try:
+                        follow_button = toggle_container.find_element(By.CSS_SELECTOR, ".iconButton")
+                        
+                        # Verify it's clickable
+                        WebDriverWait(self.driver, self.timeout).until(
+                            EC.element_to_be_clickable(follow_button)
+                        )
+                        
+                        print("Follow button found and is clickable")
+                        
+                        # Click the follow button
+                        follow_button.click()
+                        print("Follow button clicked successfully")
+                        
+                        # Wait a moment for the action to complete
+                        time.sleep(1)
+                        
+                        return {"success": True, "message": "Follow button clicked successfully", "action_performed": True}
+                        
+                    except TimeoutException:
+                        return {"success": False, "error": "button_not_clickable", "message": "Follow button exists but is not clickable"}
+                    except Exception as e:
+                        return {"success": False, "error": "button_click_error", "message": f"Error clicking follow button: {str(e)}"}
+                
+                else:
+                    print(f"Unexpected button state: {span_text}")
+                    return {"success": False, "error": "unexpected_state", "message": f"Unexpected button state: {span_text}"}
+                    
             except TimeoutException:
-                # Check if button exists but is not clickable
-                try:
-                    button_exists = self.driver.find_element(By.CSS_SELECTOR, ".iconButton")
-                    return {"success": False, "error": "button_not_clickable", "message": "Follow button exists but is not clickable"}
-                except Exception as e:
-                    return {"success": False, "error": "button_not_found", "message": "Follow button not found on page"}
-
-            try:
-                
-                # Try regular click first
-                follow_button.click()
-                print("Follow button clicked successfully")
-                
-                # Wait a moment and verify the action succeeded (you might need to adjust this based on the site's behavior)
-                time.sleep(1)
-                
-                # Optional: Check if the button state changed (e.g., text changed from "Follow" to "Following")
-                # This depends on how the website implements the follow functionality
-                
-                return {"success": True, "message": "Follow button clicked successfully"}
-                
+                return {"success": False, "error": "toggle_container_not_found", "message": "Toggle container not found on page"}
             except Exception as e:
-                print(f"Error clicking follow button: {str(e)}")
-                return False
-        
+                return {"success": False, "error": "parsing_error", "message": f"Error parsing toggle container: {str(e)}"}
+            
         except Exception as e:
             print(f"Error during tender details scraping: {str(e)}")
             import traceback
             traceback.print_exc()
-            return False
+            return {"success": False, "error": "general_error", "message": f"General error: {str(e)}"}
 
 
     
