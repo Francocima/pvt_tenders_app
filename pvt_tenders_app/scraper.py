@@ -12,12 +12,7 @@ from selenium.common.exceptions import TimeoutException
 from botocore.client import BaseClient
 import zipfile
 from botocore.exceptions import ClientError
-from .utils import (
-    setup_selenium,
-    wait_for_download,
-    extract_zip_file,
-    upload_file_to_spaces
-)
+from .utils import setup_selenium, wait_for_download, extract_zip_file, upload_file_to_spaces
 
 
 class TenderScraper:
@@ -578,7 +573,7 @@ class TenderScraper:
             print("Driver not initialized. Please login first.")
             return []
 
-        client = self._set_up_do_spaces_(do_spaces_config)
+        client = self._set_up_do_spaces(do_spaces_config)
         if not client:
                 print("Failed to connect to Digital Ocean Spaces")
                 return [{'status': 'error', 'error': 'DO Spaces setup failed'}]
@@ -700,7 +695,7 @@ class TenderScraper:
 
 
         # Set up Digital Ocean Spaces client
-        spaces_client = self._set_up_do_spaces_(do_spaces_config)
+        spaces_client = self._set_up_do_spaces(do_spaces_config)
         if not spaces_client:
             return [{"error": "Failed to initialize Digital Ocean Spaces client"}]
 
