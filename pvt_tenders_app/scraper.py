@@ -614,7 +614,7 @@ class TenderScraper:
                 self.driver.execute_script("arguments[0].click();", download_button)
 
                 # Wait for file(s) to be downloaded
-                downloaded_path = self.wait_for_download(timeout=120)
+                downloaded_path = wait_for_download(timeout=120)
 
                 if not downloaded_path:
                     return [{'status': 'error', 'error': 'Download failed or timed out'}]
@@ -623,7 +623,7 @@ class TenderScraper:
                     # Extract the zip
                     extract_dir = os.path.join(self.download_dir, f"extracted_{tender_id}")
                     os.makedirs(extract_dir, exist_ok=True)
-                    extracted_files = self.extract_zip_file(downloaded_path, extract_dir)
+                    extracted_files = extract_zip_file(downloaded_path, extract_dir)
 
                     if not extracted_files:
                         return [{'status': 'error', 'error': 'No files extracted from zip or null files'}]
@@ -634,7 +634,7 @@ class TenderScraper:
                         
                             filename = os.path.basename(file_path)
                             object_key = f"{tender_id}/{filename}"
-                            upload_success = self.upload_file_to_spaces(client, bucket_name, file_path, object_key)
+                            upload_success = upload_file_to_spaces(client, bucket_name, file_path, object_key)
 
                             downloaded_files.append({
                                 'filename': filename,
@@ -649,7 +649,7 @@ class TenderScraper:
                     
                         filename = os.path.basename(downloaded_path)
                         object_key = f"{tender_id}/{filename}"
-                        upload_success = self._upload_file_to_spaces(client, bucket_name, downloaded_path, object_key)
+                        upload_success = upload_file_to_spaces(client, bucket_name, downloaded_path, object_key)
 
                         downloaded_files.append({
                             'filename': filename,
