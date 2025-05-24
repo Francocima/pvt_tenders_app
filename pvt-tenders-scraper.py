@@ -156,8 +156,6 @@ class TenderScraper:
             return None
         
 
-
-
     async def __aenter__(self):
         """Set up resources when entering context"""
         if not self.use_selenium:
@@ -848,7 +846,7 @@ class TenderScraper:
                     # Extract the zip
                     extract_dir = os.path.join(self.download_dir, f"extracted_{tender_id}")
                     os.makedirs(extract_dir, exist_ok=True)
-                    extracted_files = self._extract_zip_file(downloaded_path, extract_dir)
+                    extracted_files = self.extract_zip_file(downloaded_path, extract_dir)
 
                     if not extracted_files:
                         return [{'status': 'error', 'error': 'No files extracted from zip or null files'}]
@@ -898,10 +896,7 @@ class TenderScraper:
                     'error': str(e)
                 })
 
-        return downloaded_files
-            
-        
-    
+        return downloaded_files  
     
     
     def download_tender_files_bulk(self, tender_ids: List[str], url_template: str, do_spaces_config: Dict[str, str], bucket_name) -> List[Dict]:
