@@ -26,3 +26,4 @@ class ScrapeDownloadFiles(BaseModel):
     password: str
     url_template: str
     do_spaces_config: Dict[str, str]
+    webhook_url: str

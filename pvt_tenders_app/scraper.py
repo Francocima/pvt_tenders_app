@@ -2,6 +2,7 @@ import time
 import os
 import boto3
 import aiohttp
+import requests
 from datetime import datetime
 from bs4 import BeautifulSoup
 from typing import List, Dict, Optional
@@ -104,13 +105,12 @@ class TenderScraper:
             print(f"DO Spaces setup failed: {e}")
             return None
 
-    async def send_to_webhook(self, webhook_url: str, tenders: List[Dict]):
+    def send_to_webhook(self, webhook_url: str, tenders: List[Dict]):
         try:
-            async with aiohttp.ClientSession() as session:
                 headers = {"Content-Type": "application/json"}
                 payload = {"timestamp": datetime.now().isoformat(), "tenders": tenders}
-                async with session.post(webhook_url, headers=headers, json=payload) as response:
-                    return response.status == 200
+                response = requests.post(webhook_url, headers=headers, json=payload, timeout=30)
+                return response.status_code == 200
         except Exception as e:
             print(f"Webhook send error: {e}")
             return False
@@ -578,7 +578,7 @@ class TenderScraper:
             print("Driver not initialized. Please login first.")
             return []
 
-        client = self._set_up_do_spaces_(do_spaces_config)
+        client = self._set_up_do_spaces(do_spaces_config)
         if not client:
                 print("Failed to connect to Digital Ocean Spaces")
                 return [{'status': 'error', 'error': 'DO Spaces setup failed'}]
@@ -700,7 +700,7 @@ class TenderScraper:
 
 
         # Set up Digital Ocean Spaces client
-        spaces_client = self._set_up_do_spaces_(do_spaces_config)
+        spaces_client = self._set_up_do_spaces(do_spaces_config)
         if not spaces_client:
             return [{"error": "Failed to initialize Digital Ocean Spaces client"}]
 
