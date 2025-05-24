@@ -13,6 +13,13 @@ import os
 from datetime import datetime
 import random
 import selenium.webdriver as webdriver
+import boto3
+import tempfile
+import zipfile
+from botocore.exceptions import ClientError
+import requests
+from botocore.client import BaseClient
+from pathlib import Path
 
 
 #import all selenium imports
@@ -54,9 +61,11 @@ class ScrapeTenderDescription(BaseModel):
 
 class ScrapeDownloadFiles(BaseModel):
     login_url: str
-    tender_id: str
+    tender_ids: List[str]
     email: str
     password: str
+    url_template: str
+    do_spaces_config: Dict[str, str]
 
 
 #Scraper creation
@@ -101,7 +110,17 @@ class TenderScraper:
 
         # Set user agent - Picks randomly from the list
         chrome_options.add_argument(f"user-agent={random.choice(self.user_agents)}")
-    
+
+        download_dir = tempfile.mkdtemp()
+
+        prefs = {
+            "download.default_directory": download_dir,
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": True
+        }
+        chrome_options.add_experimental_option("prefs", prefs)
+
         chromedriver_path = '/usr/local/bin/chromedriver'
         
         self.driver = webdriver.Chrome(
@@ -109,11 +128,33 @@ class TenderScraper:
             options=chrome_options
         )
             
+        self.download_dir = download_dir
+        
         # Set window size
         self.driver.set_window_size(1200, 720)
         
         # Execute JavaScript to mask WebDriver presence
         self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")    
+
+    
+    def _set_up_do_spaces_(self, do_spaces_config: Dict[str, str]) -> Optional[BaseClient]:
+        try:
+            session = boto3.session.Session()
+            client = session.client(
+                service_name='s3',
+                region_name=do_spaces_config['region'],
+                endpoint_url=do_spaces_config['endpoint_url'],
+                aws_access_key_id=do_spaces_config['access_key'],
+                aws_secret_access_key=do_spaces_config['secret_key']
+        )
+            client.head_bucket(Bucket=do_spaces_config['bucket_name'])
+            print("Successfully connected to Digital Ocean Spaces")
+            return client
+        
+        except Exception as e :
+            print(f"Error setting up DO Spaces: {str(e)}")
+            return None
+        
 
     async def __aenter__(self):
         """Set up resources when entering context"""
@@ -130,6 +171,7 @@ class TenderScraper:
                 print(f"Error initializing session: {str(e)}")
                 
         return self
+    
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Clean up resources when exiting context"""
@@ -139,7 +181,7 @@ class TenderScraper:
             await self.session.close()
 
     #using the API call with the email and password to login
-    async def _login_ (self, email: str, password: str, login_url: str):
+    def _login_ (self, email: str, password: str, login_url: str):
         """
         Logs into the VendorPanel website using Selenium.
         """
@@ -616,7 +658,7 @@ class TenderScraper:
             return False
 
 
-    async def follow_button_click(self, tender_id: str):
+    async def follow_button_click(self, tender_id: str): 
 
         tender_details_url =  f"https://www.vendorpanel.com.au/Members/VendorPreviewOpportunity.aspx?opportunityId={tender_id}"
 
@@ -625,41 +667,54 @@ class TenderScraper:
 
             self.driver.get(tender_details_url)
 
-            WebDriverWait(self.driver, self.timeout).until(
-            EC.any_of(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".OpportunityPreviewRow")),
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
-                EC.url_contains("VendorPreviewOpportunity")
-            ))   #Last flag to see if we are in the right page
             
-            print("Page loaded successfully")
-
+            try:
+                WebDriverWait(self.driver, self.timeout).until(
+                    EC.any_of(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".OpportunityPreviewRow")),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
+                        EC.url_contains("VendorPreviewOpportunity")
+                ))   #Last flag to see if we are in the right page
+                
+                print("Page loaded successfully")
+            except TimeoutException:
+                print("Timeout waiting for the tender details page to load")
+                return False
+            
             # get the page source and parse it with BS4
             page_source = self.driver.page_source
-            soup = BeautifulSoup(page_source, 'html.parser')            
+                     
+
+                        # Look for the follow button
+            try:
+                follow_button = WebDriverWait(self.driver, self.timeout).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".iconButton"))  
+                )
+                print("Follow button found and is clickable")
+            except TimeoutException:
+                # Check if button exists but is not clickable
+                try:
+                    button_exists = self.driver.find_element(By.CSS_SELECTOR, ".iconButton")
+                    return {"success": False, "error": "button_not_clickable", "message": "Follow button exists but is not clickable"}
+                except Exception as e:
+                    return {"success": False, "error": "button_not_found", "message": "Follow button not found on page"}
 
             try:
-                # find the follow button
-
-                follow_button = WebDriverWait(self.driver, self.timeout).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".iconButton"))  
-                )
-
-                if follow_button:
-                    try:
-                        follow_button.click()
-                        print("Follow button clicked successfully")
-                    except Exception as e:
-                        print(f"Error clicking follow button: {str(e)}")
-                        return False
-                else:
-                    print("Follow button not found")
-                    return False
                 
-                return f"follow button clicked successfully"
-
+                # Try regular click first
+                follow_button.click()
+                print("Follow button clicked successfully")
+                
+                # Wait a moment and verify the action succeeded (you might need to adjust this based on the site's behavior)
+                time.sleep(1)
+                
+                # Optional: Check if the button state changed (e.g., text changed from "Follow" to "Following")
+                # This depends on how the website implements the follow functionality
+                
+                return {"success": True, "message": "Follow button clicked successfully"}
+                
             except Exception as e:
-                print(f"Error finding follow button: {str(e)}")
+                print(f"Error clicking follow button: {str(e)}")
                 return False
         
         except Exception as e:
@@ -669,6 +724,269 @@ class TenderScraper:
             return False
 
 
+    def _download_wait_ (self, timeout=120) -> Optional[str]:
+
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            # Look for files in download directory
+            if os.path.exists(self.download_dir):
+                files = os.listdir(self.download_dir)
+                
+                # Filter out partial downloads (usually end with .crdownload or .tmp)
+                complete_files = [f for f in files if not f.endswith(('.crdownload', '.tmp', '.part'))]
+                
+                if complete_files:
+                    # Return the first complete file found
+                    return os.path.join(self.download_dir, complete_files[0])
+            
+            time.sleep(1)
+        
+        print(f"Download timeout after {timeout} seconds")
+        return None
+    
+    def _extract_zip_file(self, zip_path: str, extract_dir: str) -> List[str]:
+        """
+        Extract zip file and return list of extracted file paths
+        """
+        extracted_files = []
+        
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+                extracted_files = [os.path.join(extract_dir, name) for name in zip_ref.namelist()]
+                print(f"Extracted {len(extracted_files)} files from {zip_path}")
+        except Exception as e:
+            print(f"Error extracting zip file {zip_path}: {str(e)}")
+        
+        return extracted_files
+
+
+    def _upload_file_to_spaces(self, client, bucket_name: str, file_path: str, object_key: str) -> bool:
+        """
+        Upload a file to Digital Ocean Spaces
+        """
+        try:
+            with open(file_path, 'rb') as file_data:
+                client.upload_fileobj(
+                    file_data,
+                    bucket_name,
+                    object_key,
+                    ExtraArgs={'ACL': 'private'}  # Set appropriate ACL
+                )
+            print(f"Successfully uploaded {file_path} to {bucket_name}/{object_key}")
+            return True
+        except ClientError as e:
+            print(f"Error uploading file to Digital Ocean Spaces: {str(e)}")
+            return False
+
+    
+    def scrape_download_files(self, tender_id, url_template, do_spaces_config: Dict[str,str], bucket_name: str) -> List[Dict]:
+        """
+        Download files for a single tender
+        
+        Args:
+            tender_id: The tender ID to download files for
+            download_url_template: URL template with {tender_id} placeholder
+            
+        Returns:
+            List[Dict]: Information about downloaded files
+        """
+        if not hasattr(self, 'driver'):
+            print("Driver not initialized. Please login first.")
+            return []
+
+        client = self._set_up_do_spaces_(do_spaces_config)
+        if not client:
+                print("Failed to connect to Digital Ocean Spaces")
+                return [{'status': 'error', 'error': 'DO Spaces setup failed'}]
+
+        downloaded_files = []
+
+        try:
+                # Construct URL
+                tender_url = url_template.replace("{tender_id}", tender_id) if url_template else \
+                    f"https://www.vendorpanel.com.au/Members/iFramePopIziModal.aspx?pageSrc=/Members/VendorDownloadOpportunityPackage.aspx|||opportunityId={tender_id}"
+
+                print(f"Navigating to tender page: {tender_url}")
+                self.driver.get(tender_url)
+                
+                # Wait for iframe and switch to it
+                iframe = WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "iframe"))
+                )
+                self.driver.switch_to.frame(iframe)
+
+                # Find the "Download All" button by ID or text — adjust selector as needed
+                download_button = WebDriverWait(self.driver, self.timeout).until(
+                    EC.element_to_be_clickable((
+                        By.XPATH,
+                        "//input[@id='btnGo' or @name='PopUpMaster$masterMain$btnGo' or contains(@class, 'formBtnBlue')]"
+                    ))
+                )
+
+                # Clear download directory before downloading
+                if os.path.exists(self.download_dir):
+                    for file in os.listdir(self.download_dir):
+                        file_path = os.path.join(self.download_dir, file)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+
+                # Click the download button
+                print("Clicking download button")
+                self.driver.execute_script("arguments[0].click();", download_button)
+
+                # Wait for file(s) to be downloaded
+                downloaded_path = self._download_wait_(timeout=120)
+
+                if not downloaded_path:
+                    return [{'status': 'error', 'error': 'Download failed or timed out'}]
+
+                if downloaded_path.lower().endswith('.zip'):
+                    # Extract the zip
+                    extract_dir = os.path.join(self.download_dir, f"extracted_{tender_id}")
+                    os.makedirs(extract_dir, exist_ok=True)
+                    extracted_files = self.extract_zip_file(downloaded_path, extract_dir)
+
+                    if not extracted_files:
+                        return [{'status': 'error', 'error': 'No files extracted from zip or null files'}]
+
+                    for file_path in extracted_files:
+                        
+                        if os.path.isfile(file_path):
+                        
+                            filename = os.path.basename(file_path)
+                            object_key = f"{tender_id}/{filename}"
+                            upload_success = self._upload_file_to_spaces(client, bucket_name, file_path, object_key)
+
+                            downloaded_files.append({
+                                'filename': filename,
+                                'local_path': file_path,
+                                'file_size': os.path.getsize(file_path),
+                                'status': 'uploaded' if upload_success else 'upload_failed',
+                                'spaces_path': object_key if upload_success else None
+                        })
+                else:
+                    # If not a zip, upload directly
+                    if os.path.isfile(downloaded_path):
+                    
+                        filename = os.path.basename(downloaded_path)
+                        object_key = f"{tender_id}/{filename}"
+                        upload_success = self._upload_file_to_spaces(client, bucket_name, downloaded_path, object_key)
+
+                        downloaded_files.append({
+                            'filename': filename,
+                            'local_path': downloaded_path,
+                            'file_size': os.path.getsize(downloaded_path),
+                            'status': 'uploaded' if upload_success else 'upload_failed',
+                            'spaces_path': object_key if upload_success else None
+                        })
+                    else:
+                        downloaded_files.append({
+                            'status': 'error',
+                            'error': f'Downloaded path is not a file: {downloaded_path}'
+                        })
+
+        except Exception as e:
+                print(f"Error in scrape_download_files: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                downloaded_files.append({
+                    'status': 'error',
+                    'error': str(e)
+                })
+
+        return downloaded_files  
+    
+    
+    def download_tender_files_bulk(self, tender_ids: List[str], url_template: str, do_spaces_config: Dict[str, str], bucket_name) -> List[Dict]:
+        """
+        Download files for multiple tenders from a given URL and upload to Digital Ocean Spaces
+        
+        Args:
+            tender_ids: List of tender IDs to process
+            download_url: URL where the download functionality is available
+            do_spaces_config: Digital Ocean Spaces configuration
+            
+        Returns:
+            List[Dict]: Results for each tender processed
+        """
+        if not hasattr(self, 'driver'):
+            print("Driver not initialized. Please login first.")
+            return []
+
+
+
+        # Set up Digital Ocean Spaces client
+        spaces_client = self._set_up_do_spaces_(do_spaces_config)
+        if not spaces_client:
+            return [{"error": "Failed to initialize Digital Ocean Spaces client"}]
+
+        results = []
+        bucket_name = do_spaces_config.get('bucket_name')
+        
+        for tender_id in tender_ids:
+            tender_result = {
+                "tender_id": tender_id,
+                "status": "processing",
+                "files_uploaded": [],
+                "errors": []
+            }
+            
+            try:
+                print(f"Processing tender ID: {tender_id}")
+                
+                
+                
+                # Wait for download to complete
+                downloaded_files = self.scrape_download_files(
+                    tender_id=tender_id, 
+                    url_template=url_template, 
+                    do_spaces_config=do_spaces_config, 
+                    bucket_name=bucket_name)
+                
+                if not downloaded_files:
+                    tender_result["status"] = "error"
+                    tender_result["errors"].append("Download timeout or failed")
+                    results.append(tender_result)
+                    continue
+                
+                print(f"Downloaded file: {downloaded_files}")
+                
+                for file_info in downloaded_files:
+                    if file_info.get('status') == 'error':
+                        tender_result["errors"].append(file_info.get('error', 'Unknown error'))
+                    elif file_info.get('status') == 'uploaded':
+                        tender_result["files_uploaded"].append({
+                            "filename": file_info.get('filename'),
+                            "object_key": file_info.get('spaces_path'),
+                            "file_size": file_info.get('file_size'),
+                            "local_path": file_info.get('local_path')
+                        })
+                    elif file_info.get('status') == 'upload_failed':
+                        tender_result["errors"].append(f"Failed to upload {file_info.get('filename', 'unknown file')}")
+                
+                # Set final status
+                if tender_result["files_uploaded"]:
+                    tender_result["status"] = "completed"
+                else:
+                    tender_result["status"] = "error"
+                    if not tender_result["errors"]:
+                        tender_result["errors"].append("No files were successfully uploaded")
+                        
+            except Exception as e:
+                print(f"Error processing tender {tender_id}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                tender_result["status"] = "error"
+                tender_result["errors"].append(str(e))
+            
+            results.append(tender_result)
+            
+            # Add delay between tenders
+            time.sleep(2)
+        
+        return results
 
 ### API ENDPOINTS
 
@@ -812,46 +1130,7 @@ async def scrape_tender_description(request: ScrapeTenderDescription):
             except Exception as cleanup_error:
                 print(f"Error closing WebDriver: {str(cleanup_error)}")
 
-@app.post("/scrape_download_files", response_model=List[Dict])
-async def download_tender_files(request: ScrapeDownloadFiles):
-    """
-    Endpoint to download files for a specific tender and upload to Digital Ocean Spaces
-    """
-    scraper = TenderScraper(use_selenium=True)
 
-    try:
-        print(f"Starting login process for: {request.email}")
-        login_success = await scraper._login_(
-            email=request.email,
-            password=request.password,
-            login_url=str(request.login_url)
-        )
-
-        if not login_success:
-            raise HTTPException(status_code=401, detail="Login failed")
-        
-        print("Login successful, proceeding to download tender files")
-
-        uploaded_files = await scraper.scrape_download_files(str(request.tender_id))
-
-        if not uploaded_files:
-            return []
-        
-        return uploaded_files
-
-    except Exception as e:
-        print(f"Error during file download process: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error during file download: {str(e)}")
-    finally:
-        # Clean up Selenium resources
-        if hasattr(scraper, 'driver'):
-            try:
-                scraper.driver.quit()
-                print("WebDriver closed successfully")
-            except Exception as cleanup_error:
-                print(f"Error closing WebDriver: {str(cleanup_error)}")
 
 @app.post("/follow_button_click", response_model=Dict)
 async def follow_button_click(request: ScrapeTenderDescription):
@@ -875,8 +1154,14 @@ async def follow_button_click(request: ScrapeTenderDescription):
 
         success = await scraper.follow_button_click(str(request.tender_id))
 
-        if not success:
-            raise HTTPException(status_code=404, detail="Follow button click failed")
+        if not success ["success"]:
+            error_type = success.get("error", "unknown_error")
+            if error_type == "button_not_clickable":
+                raise HTTPException(status_code=400, detail="Follow button exists but is not clickable")
+            elif error_type == "button_not_found":
+                raise HTTPException(status_code=404, detail="Follow button not found on page")
+            else:
+                raise HTTPException(status_code=500, detail="Unknown error during follow button click")
         
         return {"status": "success", "message": "Follow button clicked successfully"}
 
@@ -893,6 +1178,62 @@ async def follow_button_click(request: ScrapeTenderDescription):
                 print("WebDriver closed successfully")
             except Exception as cleanup_error:
                 print(f"Error closing WebDriver: {str(cleanup_error)}")
+
+
+
+@app.post("/download_tender", response_model=List[Dict])
+def download_tender_files_bulk_endpoint(request: ScrapeDownloadFiles):
+    """
+    Endpoint to download files for multiple tenders and upload to Digital Ocean Spaces
+    
+    Expected do_spaces_config:
+    {
+        "region": "syd1",
+        "endpoint_url": "https://syd1.digitaloceanspaces.com", 
+        "access_key": "your_access_key",
+        "secret_key": "your_secret_key",
+        "bucket_name": "your_bucket_name"
+    }
+    """
+    scraper = TenderScraper(use_selenium=True)
+
+    try:
+        print(f"Starting login process for: {request.email}")
+        login_success = scraper._login_(
+            email=request.email,
+            password=request.password,
+            login_url=str(request.login_url)
+        )
+
+        if not login_success:
+            raise HTTPException(status_code=401, detail="Login failed")
+        
+        print("Login successful, proceeding to download tender files")
+
+        
+        results = scraper.download_tender_files_bulk(
+            tender_ids=request.tender_ids,
+            url_template=request.url_template,
+            do_spaces_config=request.do_spaces_config,
+            bucket_name = request.do_spaces_config["bucket_name"]
+        )
+
+        return results
+
+    except Exception as e:
+        print(f"Error during bulk file download process: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error during bulk file download: {str(e)}")
+    finally:
+        # Clean up Selenium resources
+        if hasattr(scraper, 'driver'):
+            try:
+                scraper.driver.quit()
+                print("WebDriver closed successfully")
+            except Exception as cleanup_error:
+                print(f"Error closing WebDriver: {str(cleanup_error)}")
+
 
 #Uvicorn API local testing creation
 if __name__ == "__main__":
