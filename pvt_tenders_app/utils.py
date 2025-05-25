@@ -42,9 +42,16 @@ def wait_for_download(download_dir, timeout=120):
     start_time = time.time()
     while time.time() - start_time < timeout:
         files = os.listdir(download_dir)
-        complete_files = [f for f in files if not f.endswith(('.crdownload', '.tmp', '.part'))]
+        complete_files = [f for f in files if not (
+            f.endswith(('.crdownload', '.tmp', '.part')) or 
+            f.startswith('.com.google.Chrome') or  # ← Add this line
+            f.startswith('.')  # ← Filter out hidden files
+        )]
         if complete_files:
-            return os.path.join(download_dir, complete_files[0])
+            file_path = os.path.join(download_dir, complete_files[0])
+            # Make sure the file actually exists and has content
+            if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                return file_path
         time.sleep(1)
     return None
 

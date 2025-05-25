@@ -613,8 +613,12 @@ class TenderScraper:
                 print("Clicking download button")
                 self.driver.execute_script("arguments[0].click();", download_button)
 
+                print(f"Download directory: {self.download_dir}")
+                if os.path.exists(self.download_dir):
+                    print(f"Files in download dir before download: {os.listdir(self.download_dir)}")
+
                 # Wait for file(s) to be downloaded
-                downloaded_path = wait_for_download(timeout=120, download_dir=self.download_dir)
+                downloaded_path = wait_for_download(download_dir=self.download_dir, timeout=120)
 
                 if not downloaded_path:
                     return [{'status': 'error', 'error': 'Download failed or timed out'}]
