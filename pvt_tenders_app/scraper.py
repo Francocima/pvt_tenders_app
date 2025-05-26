@@ -619,7 +619,7 @@ class TenderScraper:
                 self.driver.execute_script("arguments[0].click();", download_button)
 
                 # Wait for file(s) to be downloaded
-                downloaded_path = wait_for_download(timeout=120)
+                downloaded_path = wait_for_download(download_dir=self.download_dir, timeout=120)
 
                 if not downloaded_path:
                     return [{'status': 'error', 'error': 'Download failed or timed out'}]
