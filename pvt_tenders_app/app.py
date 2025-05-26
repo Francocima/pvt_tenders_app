@@ -123,7 +123,7 @@ def download_tenders(request: ScrapeDownloadFiles, background_tasks: BackgroundT
     }
 
 
-def run_download_background(
+async def run_download_background(
     email: str, 
     password: str, 
     login_url: str, 
@@ -145,7 +145,7 @@ def run_download_background(
         )
         
         # Send results to webhook
-        scraper.send_to_webhook(webhook_url, results or [])
+        await scraper.send_to_webhook(webhook_url, results or [])
         
     except Exception as e:
         print(f"[ERROR] Background download: {str(e)}")
