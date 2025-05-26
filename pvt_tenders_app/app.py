@@ -101,21 +101,60 @@ async def follow_button_click(request: ScrapeTenderDescription):
             scraper.driver.quit()
 
 
-@app.post("/download_tender", response_model=List[Dict])
-def download_tender(request: ScrapeDownloadFiles):
+@app.post("/download_tender")
+def download_tenders(request: ScrapeDownloadFiles, background_tasks: BackgroundTasks):
+    if not request.webhook_url:
+        raise HTTPException(status_code=400, detail="Missing webhook_url")
+
+    background_tasks.add_task(
+        run_download_background,
+        request.email,
+        request.password,
+        str(request.login_url),
+        request.tender_ids,
+        str(request.url_template),
+        request.do_spaces_config,
+        str(request.webhook_url)
+    )
+    return {
+        "status": "processing",
+        "message": "Download started, results will be sent to webhook.",
+        "webhook_url": request.webhook_url
+    }
+
+
+def run_download_background(
+    email: str, 
+    password: str, 
+    login_url: str, 
+    tender_ids: List[str], 
+    url_template: str, 
+    do_spaces_config: Dict[str, str], 
+    webhook_url: str
+):
     scraper = TenderScraper()
     try:
-        if not scraper._login(request.email, request.password, request.login_url):
-            raise HTTPException(status_code=401, detail="Login failed")
+        if not scraper._login(email, password, login_url):
+            raise Exception("Login failed")
+        
         results = scraper.download_tender_files_bulk(
-            tender_ids=request.tender_ids,
-            url_template=request.url_template,
-            do_spaces_config=request.do_spaces_config,
-            bucket_name=request.do_spaces_config["bucket_name"]
+            tender_ids=tender_ids,
+            url_template=url_template,
+            do_spaces_config=do_spaces_config,
+            bucket_name=do_spaces_config["bucket_name"]
         )
-        return results
+        
+        # Send results to webhook
+        scraper.send_to_webhook(webhook_url, results or [])
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Download error: {str(e)}")
+        print(f"[ERROR] Background download: {str(e)}")
+        # Optionally send error to webhook
+        error_data = {"error": str(e), "status": "failed"}
+        try:
+            scraper.send_to_webhook(webhook_url, error_data)
+        except:
+            pass
     finally:
         if hasattr(scraper, "driver"):
             scraper.driver.quit()
