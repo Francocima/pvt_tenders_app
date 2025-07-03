@@ -84,7 +84,7 @@ async def scrape_description(request: ScrapeTenderDescription):
         if hasattr(scraper, "driver"):
             scraper.driver.quit()
 
-
+# new batch processing endpoint
 @app.post("/scrape_description_batch")
 async def scrape_description_batch(request: ScrapeTenderDescriptionBatch, background_tasks: BackgroundTasks):
     """
