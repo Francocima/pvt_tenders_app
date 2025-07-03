@@ -1,5 +1,6 @@
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from typing import List, Dict
+import traceback
 
 from .models import (
     LoginRequest,
@@ -208,5 +209,11 @@ async def run_download_background(
 
 @app.post("/post_testing")
 async def process(data: PostTesting):
-    print("Data received:", data)
-    return {"status": "ok"}  # <- make sure this is present
+
+    try:    
+        print("Data received:", data)
+        return {"status": "ok"}  # <- make sure this is present
+
+    except Exception as e:
+        traceback.print_exc()
+        return {"error": str(e)}
