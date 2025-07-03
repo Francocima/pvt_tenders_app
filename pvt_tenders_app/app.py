@@ -6,7 +6,8 @@ from .models import (
     ScrapeRequest,
     ScrapeTenderDescription,
     ScrapeDownloadFiles,
-    ScrapeTenderDescriptionBatch
+    ScrapeTenderDescriptionBatch,
+    PostTesting
 )
 from .scraper import TenderScraper
 
@@ -203,3 +204,9 @@ async def run_download_background(
     finally:
         if hasattr(scraper, "driver"):
             scraper.driver.quit()
+
+
+@app.post("/post_testing")
+async def process(data: PostTesting):
+    print("Data received:", data)
+    return {"status": "ok"}  # <- make sure this is present
