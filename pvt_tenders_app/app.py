@@ -85,31 +85,50 @@ async def scrape_description(request: ScrapeTenderDescription):
             scraper.driver.quit()
 
 
-@app.post("/scrape_description_batch", response_model=Dict)
-async def scrape_description_batch(request: ScrapeTenderDescriptionBatch):
+@app.post("/scrape_description_batch")
+async def scrape_description_batch(request: ScrapeTenderDescriptionBatch, background_tasks: BackgroundTasks):
     """
     Scrape tender descriptions for all provided tender_ids
     """
+    if not hasattr(request, 'webhook_url') or not request.webhook_url:
+        raise HTTPException(status_code=400, detail="Missing webhook_url")
+    
+    background_tasks.add_task(
+        run_batch_scraper_background,
+        request.email,
+        request.password,
+        str(request.login_url),
+        request.tender_ids,
+        request.delay_between_requests,
+        str(request.webhook_url)
+    )
+    
+    return {
+        "status": "processing",
+        "message": f"Batch scraping started for {len(request.tender_ids)} tenders, results will be sent to webhook.",
+        "webhook_url": request.webhook_url
+    }
+
+async def run_batch_scraper_background(email: str, password: str, login_url: str, tender_ids: List[str], delay_between_requests: float, webhook_url: str):
     scraper = TenderScraper()
     try:
-        # Login once for the entire batch
-        if not scraper._login(request.email, request.password, request.login_url):
-            raise HTTPException(status_code=401, detail="Login failed")
+        if not scraper._login(email, password, login_url):
+            raise Exception("Login failed")
         
-        # Process all tender_ids
         results = await scraper.scrape_tender_description_batch(
-            tender_ids=request.tender_ids,
-            delay_between_requests=request.delay_between_requests
+            tender_ids=tender_ids,
+            delay_between_requests=delay_between_requests
         )
         
-        # Return results even if some failed
-        return results
+        await scraper.send_to_webhook(webhook_url, results)
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error during batch scraping: {str(e)}")
+        print(f"[ERROR] Background batch scraping: {str(e)}")
     finally:
         if hasattr(scraper, "driver"):
             scraper.driver.quit()
+
+
 
 @app.post("/follow_button_click", response_model=Dict)
 async def follow_button_click(request: ScrapeTenderDescription):

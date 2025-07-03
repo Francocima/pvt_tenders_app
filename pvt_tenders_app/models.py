@@ -34,3 +34,4 @@ class ScrapeTenderDescriptionBatch(BaseModel):
     email: str
     password: str
     delay_between_requests: float
+    webhook_url: str
