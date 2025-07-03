@@ -5,7 +5,8 @@ from .models import (
     LoginRequest,
     ScrapeRequest,
     ScrapeTenderDescription,
-    ScrapeDownloadFiles
+    ScrapeDownloadFiles,
+    ScrapeTenderDescriptionBatch
 )
 from .scraper import TenderScraper
 
@@ -83,6 +84,32 @@ async def scrape_description(request: ScrapeTenderDescription):
         if hasattr(scraper, "driver"):
             scraper.driver.quit()
 
+
+@app.post("/scrape_description_batch", response_model=Dict)
+async def scrape_description_batch(request: ScrapeTenderDescriptionBatch):
+    """
+    Scrape tender descriptions for all provided tender_ids
+    """
+    scraper = TenderScraper()
+    try:
+        # Login once for the entire batch
+        if not scraper._login(request.email, request.password, request.login_url):
+            raise HTTPException(status_code=401, detail="Login failed")
+        
+        # Process all tender_ids
+        results = await scraper.scrape_tender_description_batch(
+            tender_ids=request.tender_ids,
+            delay_between_requests=request.delay_between_requests
+        )
+        
+        # Return results even if some failed
+        return results
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error during batch scraping: {str(e)}")
+    finally:
+        if hasattr(scraper, "driver"):
+            scraper.driver.quit()
 
 @app.post("/follow_button_click", response_model=Dict)
 async def follow_button_click(request: ScrapeTenderDescription):

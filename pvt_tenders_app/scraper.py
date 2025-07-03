@@ -11,6 +11,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from botocore.client import BaseClient
 import zipfile
+import asyncio
 from botocore.exceptions import ClientError
 from .utils import setup_selenium, wait_for_download, extract_zip_file, upload_file_to_spaces
 
@@ -468,6 +469,158 @@ class TenderScraper:
             import traceback
             traceback.print_exc()
             return []
+
+    # ID batch processing for scraping
+
+    async def scrape_tender_description_batch(self, tender_ids: List[str], delay_between_requests: float = 1.0) -> List[Dict]:
+
+        results = {
+            'successful_scrapes': {},
+            'failed_scrapes': {},
+            'summary': {
+                'total_requested': len(tender_ids),
+                'successful_count': 0,
+                'failed_count': 0
+            }
+        }
+    
+        try:
+            print(f"Processing {len(tender_ids)} tenders")
+            
+            # Process all tender_ids sequentially
+            for index, tender_id in enumerate(tender_ids, 1):
+                try:
+                    print(f"Scraping tender {index}/{len(tender_ids)}: {tender_id}")
+                    
+                    tender_details_url = f"https://www.vendorpanel.com.au/Members/VendorPreviewOpportunity.aspx?opportunityId={tender_id}"
+                        
+                        # Navigate to the tender details page
+                    self.driver.get(tender_details_url)
+                        
+                        # Wait for page to load
+                    WebDriverWait(self.driver, self.timeout).until(
+                            EC.any_of(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, ".OpportunityPreviewRow")),
+                                EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
+                                EC.url_contains("VendorPreviewOpportunity")
+                            )
+                        )
+                        
+                        # Get page source and parse
+                    page_source = self.driver.page_source
+                    soup = BeautifulSoup(page_source, 'html.parser')
+                        
+                        # Initialize tender details with ID and URL
+                    tender_details = {
+                            'tender_id': tender_id,
+                            'tender_details_url': tender_details_url
+                        }
+                        
+                        # Extract opportunity rows
+                    opportunity_rows = soup.find_all('tr', class_='OpportunityPreviewRow')
+                        
+                    for row in opportunity_rows:
+                            # Process date sections
+                            date_sections = row.find_all('div', class_='opportunityPreviewInnerRow')
+                            
+                            for section in date_sections:
+                                heading = section.find('div', class_='opportunityPreviewMinHeading')
+                                content = section.find('div', class_='opportunityPreviewContent')
+                                
+                                if heading and content:
+                                    heading_text = heading.text.strip()
+                                    content_text = content.text.strip()
+                                    
+                                    # Remove timezone info if present
+                                    if "(" in content_text:
+                                        content_text = content_text.split("(")[0].strip()
+                                    
+                                    # Map headings to tender details
+                                    heading_mapping = {
+                                        "Opens": 'tender_opening_date',
+                                        "Expected decision": 'tender_decision_date',
+                                        "Location": 'tender_location',
+                                        "Business Info": 'tender_business_info',
+                                        "Contact Details": 'tender_contact_details',
+                                        "WebSite:": 'organisation_website',
+                                        "Email:": 'organisation_email',
+                                        "Contact Name": 'organisation_contact_name'
+                                    }
+                                    
+                                    if heading_text in heading_mapping:
+                                        tender_details[heading_mapping[heading_text]] = content_text
+                            
+                            # Process max headings
+                            max_headings = row.find_all('div', class_='opportunityPreviewMaxHeading')
+                            
+                            for max_heading in max_headings:
+                                heading_text = max_heading.text.strip()
+                                content_section = max_heading.find_next_sibling('div', class_='opportunityPreviewInnerRow')
+                                
+                                if content_section:
+                                    content_div = content_section.find('div', class_='opportunityPreviewContent')
+                                    if content_div:
+                                        content_text = content_div.text.strip()
+                                        
+                                        # Map max headings to tender details
+                                        max_heading_mapping = {
+                                            "What the buyer is requesting": 'tender_general_details',
+                                            "Background information": 'tender_background_information',
+                                            "Regions of Service": 'tender_region_of_service',
+                                            "Desired Outcomes": 'tender_desired_outcomes',
+                                            "Attachments": 'tender_attachments',
+                                            "Updates": 'tender_updates'
+                                        }
+                                        
+                                        mapped = False
+                                        for key, value in max_heading_mapping.items():
+                                            if key in heading_text:
+                                                tender_details[value] = content_text
+                                                mapped = True
+                                                break
+                                        
+                                        if not mapped:
+                                            tender_details[heading_text] = content_text
+                        
+                        # Ensure required sections exist
+                    required_sections = ['tender_general_details', 'tender_background_information', 'tender_desired_outcomes']
+                    for section in required_sections:
+                            if section not in tender_details:
+                                tender_details[section] = "Section not available"
+                        
+                        # Store successful result
+                    results['successful_scrapes'][tender_id] = tender_details
+                    results['summary']['successful_count'] += 1
+                        
+                    print(f"Successfully scraped tender {index}/{len(tender_ids)}: {tender_id}")
+                        
+                except Exception as e:
+                        error_msg = f"Error scraping tender_id {tender_id}: {str(e)}"
+                        print(error_msg)
+                        results['failed_scrapes'][tender_id] = error_msg
+                        results['summary']['failed_count'] += 1
+                    
+                    # Add delay between requests to avoid overwhelming the server
+                if delay_between_requests > 0 and index < len(tender_ids):
+                        await asyncio.sleep(delay_between_requests)
+            
+            print(f"Completed processing all {len(tender_ids)} tenders")
+        
+        except Exception as e:
+            print(f"Critical error during batch processing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise e
+        
+        return results
+
+    
+
+
+
+
+    # Follow button click functionality
+
 
     async def follow_button_click(self, tender_id: str): 
 

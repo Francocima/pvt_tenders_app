@@ -32,7 +32,7 @@ def setup_selenium(user_agents: list, chromedriver_path="/usr/local/bin/chromedr
     chromedriver_path = '/usr/local/bin/chromedriver'
     # ChromeDriverManager().install()
 
-    driver = webdriver.Chrome(service=Service(chromedriver_path), options=chrome_options)
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     driver.set_window_size(1200, 720)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
