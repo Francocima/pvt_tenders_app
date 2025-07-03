@@ -27,3 +27,10 @@ class ScrapeDownloadFiles(BaseModel):
     url_template: str
     do_spaces_config: Dict[str, str]
     webhook_url: str
+
+class ScrapeTenderDescriptionBatch(BaseModel):
+    login_url: str
+    tender_ids: List[str]
+    email: str
+    password: str
+    delay_between_requests: float
