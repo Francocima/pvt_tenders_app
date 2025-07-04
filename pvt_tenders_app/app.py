@@ -217,3 +217,59 @@ async def process(data: PostTesting):
     except Exception as e:
         traceback.print_exc()
         return {"error": str(e)}
+    
+
+@app.post("/debug_chromedriver")
+async def debug_chromedriver():
+    try:
+        import selenium
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from webdriver_manager.chrome import ChromeDriverManager
+        
+        info = {
+            "selenium_version": selenium.__version__,
+            "step": "starting"
+        }
+        
+        # Step 1: Test Chrome options
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        
+        info["step"] = "chrome_options_created"
+        
+        # Step 2: Test ChromeDriver manager
+        try:
+            chromedriver_path = '/usr/local/bin/chromedriver'
+            info["chromedriver_path"] = chromedriver_path
+            info["step"] = "chromedriver_downloaded"
+        except Exception as e:
+            info["chromedriver_error"] = str(e)
+            return {"status": "failed", "info": info}
+        
+        # Step 3: Test WebDriver initialization
+        try:
+            service = service(chromedriver_path)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            info["step"] = "webdriver_created"
+            
+            # Step 4: Test basic operation
+            driver.get("https://www.google.com")
+            title = driver.title
+            info["test_page_title"] = title
+            info["step"] = "basic_navigation_success"
+            
+            driver.quit()
+            info["step"] = "complete_success"
+            
+        except Exception as e:
+            info["webdriver_error"] = str(e)
+            return {"status": "failed", "info": info}
+        
+        return {"status": "success", "info": info}
+        
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
