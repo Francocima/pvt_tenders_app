@@ -24,7 +24,6 @@ RUN apt-get update && apt-get install -y \
     libnss3 \
     libcups2 \
     libxss1 \
-
     libgbm1 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
@@ -43,8 +42,8 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ChromeDriver
-RUN wget https://storage.googleapis.com/chrome-for-testing-public/138.0.7204.92/linux64/chromedriver-linux64.zip -P /tmp \
+# Install ChromeDriver -- changed chromedriver version
+RUN wget https://storage.googleapis.com/chrome-for-testing-public/131.0.6778.87/linux64/chromedriver-linux64.zip -P /tmp \
     && unzip /tmp/chromedriver-linux64.zip -d /usr/local/bin/ \
     && rm /tmp/chromedriver-linux64.zip \
     && chmod +x /usr/local/bin/chromedriver-linux64/chromedriver \
