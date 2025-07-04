@@ -219,57 +219,80 @@ async def process(data: PostTesting):
         return {"error": str(e)}
     
 
-@app.post("/debug_chromedriver")
-async def debug_chromedriver():
+@app.post("/check_compatibility")
+async def check_compatibility():
+    """Check Selenium and ChromeDriver compatibility"""
     try:
         import selenium
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
         from webdriver_manager.chrome import ChromeDriverManager
+        import subprocess
+        import re
         
-        info = {
+        compatibility_info = {
             "selenium_version": selenium.__version__,
-            "step": "starting"
+            "compatibility_status": "unknown"
         }
         
-        # Step 1: Test Chrome options
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        
-        info["step"] = "chrome_options_created"
-        
-        # Step 2: Test ChromeDriver manager
+        # Get Chrome browser version
         try:
-            chromedriver_path = '/usr/local/bin/chromedriver'
-            info["chromedriver_path"] = chromedriver_path
-            info["step"] = "chromedriver_downloaded"
-        except Exception as e:
-            info["chromedriver_error"] = str(e)
-            return {"status": "failed", "info": info}
+            chrome_version_output = subprocess.check_output(
+                ["google-chrome", "--version"], 
+                stderr=subprocess.STDOUT, 
+                universal_newlines=True
+            )
+            chrome_version = re.search(r'(\d+\.\d+\.\d+)', chrome_version_output).group(1)
+            compatibility_info["chrome_browser_version"] = chrome_version
+        except:
+            try:
+                # Alternative command for some systems
+                chrome_version_output = subprocess.check_output(
+                    ["chromium-browser", "--version"], 
+                    stderr=subprocess.STDOUT, 
+                    universal_newlines=True
+                )
+                chrome_version = re.search(r'(\d+\.\d+\.\d+)', chrome_version_output).group(1)
+                compatibility_info["chrome_browser_version"] = chrome_version
+            except:
+                compatibility_info["chrome_browser_version"] = "unknown"
         
-        # Step 3: Test WebDriver initialization
+        # Get ChromeDriver version
         try:
-            service = service(chromedriver_path)
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            info["step"] = "webdriver_created"
-            
-            # Step 4: Test basic operation
-            driver.get("https://www.google.com")
-            title = driver.title
-            info["test_page_title"] = title
-            info["step"] = "basic_navigation_success"
-            
-            driver.quit()
-            info["step"] = "complete_success"
-            
+            chromedriver_path = ChromeDriverManager().install()
+            chromedriver_version_output = subprocess.check_output(
+                [chromedriver_path, "--version"], 
+                stderr=subprocess.STDOUT, 
+                universal_newlines=True
+            )
+            chromedriver_version = re.search(r'(\d+\.\d+\.\d+)', chromedriver_version_output).group(1)
+            compatibility_info["chromedriver_version"] = chromedriver_version
         except Exception as e:
-            info["webdriver_error"] = str(e)
-            return {"status": "failed", "info": info}
+            compatibility_info["chromedriver_version"] = "unknown"
+            compatibility_info["chromedriver_error"] = str(e)
         
-        return {"status": "success", "info": info}
+        # Check version compatibility
+        if (compatibility_info.get("chrome_browser_version") != "unknown" and 
+            compatibility_info.get("chromedriver_version") != "unknown"):
+            
+            chrome_major = int(compatibility_info["chrome_browser_version"].split('.')[0])
+            chromedriver_major = int(compatibility_info["chromedriver_version"].split('.')[0])
+            
+            if chrome_major == chromedriver_major:
+                compatibility_info["compatibility_status"] = "compatible"
+            else:
+                compatibility_info["compatibility_status"] = "version_mismatch"
+                compatibility_info["recommendation"] = f"Update ChromeDriver to version {chrome_major}.x.x"
+        
+        # Selenium version compatibility notes
+        selenium_version = compatibility_info["selenium_version"]
+        if selenium_version.startswith("4."):
+            compatibility_info["selenium_notes"] = "Selenium 4.x - Use Service class for driver management"
+        elif selenium_version.startswith("3."):
+            compatibility_info["selenium_notes"] = "Selenium 3.x - Legacy driver management"
+        
+        return {"status": "success", "compatibility_info": compatibility_info}
         
     except Exception as e:
         return {"status": "error", "message": str(e)}
