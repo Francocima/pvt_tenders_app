@@ -260,7 +260,7 @@ async def check_compatibility():
         
         # Get ChromeDriver version
         try:
-            chromedriver_path = ChromeDriverManager().install()
+            chromedriver_path = '/usr/local/bin/chromedriver'
             chromedriver_version_output = subprocess.check_output(
                 [chromedriver_path, "--version"], 
                 stderr=subprocess.STDOUT, 
