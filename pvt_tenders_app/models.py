@@ -34,6 +34,13 @@ class ScrapeTenderDescriptionBatch(BaseModel):
     email: str
     password: str
     delay_between_requests: float
+
+class ScrapeTenderDescriptionBatchWebhook(BaseModel):
+    login_url: str
+    tender_ids: List[str]
+    email: str
+    password: str
+    delay_between_requests: float
     webhook_url: str
 
 class PostTesting(BaseModel):
