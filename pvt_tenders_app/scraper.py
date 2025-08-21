@@ -1,0 +1,934 @@
+import time
+import os
+import boto3
+import aiohttp
+from datetime import datetime
+from bs4 import BeautifulSoup
+from typing import List, Dict, Optional
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+from botocore.client import BaseClient
+import zipfile
+import asyncio
+from botocore.exceptions import ClientError
+from .utils import setup_selenium, wait_for_download, extract_zip_file, upload_file_to_spaces
+
+
+class TenderScraper:
+    def __init__(self, use_selenium: bool = True):
+        self.base_url = "https://www.vendorpanel.com.au/"
+        self.use_selenium = use_selenium
+        self.timeout = 30
+
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15'
+        ]
+
+    async def __aenter__(self):
+        if not self.use_selenium:
+            self.session = aiohttp.ClientSession(headers={"User-Agent": self.user_agents[0]})
+            try:
+                async with self.session.get(self.base_url) as response:
+                    if response.status == 200:
+                        print("Initialized aiohttp session")
+            except Exception as e:
+                print(f"Session init error: {str(e)}")
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.use_selenium and hasattr(self, "driver"):
+            self.driver.quit()
+        elif hasattr(self, "session"):
+            await self.session.close()
+
+    def _setup(self):
+        self.driver, self.download_dir = setup_selenium(self.user_agents)
+
+    def _login(self, email: str, password: str, login_url: str):
+        try:
+            self._setup()
+            self.driver.get(login_url)
+
+            email_field = WebDriverWait(self.driver, self.timeout).until(
+                EC.presence_of_element_located((By.ID, "UserName"))
+            )
+            email_field.send_keys(email)
+
+            next_button = self.driver.find_element(By.ID, "btnGo")
+            next_button.click()
+
+            password_field = WebDriverWait(self.driver, self.timeout).until(
+                EC.presence_of_element_located((By.ID, "Password"))
+            )
+            password_field.send_keys(password)
+
+            login_button = self.driver.find_element(By.ID, "btnGo")
+            login_button.click()
+
+            WebDriverWait(self.driver, self.timeout).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".dashboard-container")),
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".user-profile")),
+                    EC.url_contains("Members")
+                )
+            )
+            return True
+
+        except Exception as e:
+            print(f"Login failed: {e}")
+            return False
+
+    def _set_up_do_spaces(self, do_spaces_config: Dict[str, str]) -> Optional[BaseClient]:
+        try:
+            session = boto3.session.Session()
+            client = session.client(
+                service_name='s3',
+                region_name=do_spaces_config['region'],
+                endpoint_url=do_spaces_config['endpoint_url'],
+                aws_access_key_id=do_spaces_config['access_key'],
+                aws_secret_access_key=do_spaces_config['secret_key']
+            )
+            client.head_bucket(Bucket=do_spaces_config['bucket_name'])
+            return client
+        except Exception as e:
+            print(f"DO Spaces setup failed: {e}")
+            return None
+
+    async def send_to_webhook(self, webhook_url: str, tenders: List[Dict]):
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {"Content-Type": "application/json"}
+                payload = {"timestamp": datetime.now().isoformat(), "tenders": tenders}
+                async with session.post(webhook_url, headers=headers, json=payload) as response:
+                    return response.status == 200
+        except Exception as e:
+            print(f"Webhook send error: {e}")
+            return False
+
+    async def scrape_tenders(self, target_url: str) -> List[Dict]:
+        """
+        Scrapes tender information from the specified URL after login.
+        
+        Args:
+            target_url: The URL to scrape data from
+                
+        Returns:
+            List[Dict]: A list of dictionaries containing tender information
+        """
+        # Checkpoint to verify if the driver is initialized
+        if not hasattr(self, 'driver'):
+            print("Driver not initialized. Please login first.")
+            return []
+        
+        try:
+            print(f"Scraping tenders from: {target_url}")
+            self.driver.get(target_url)
+
+            # Wait for the page to load
+            WebDriverWait(self.driver, self.timeout).until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.TAG_NAME, "body")),
+                    EC.url_contains("do=Tenders:AllTenders")))
+            
+            print("Page loaded successfully")
+
+            time.sleep(2)  # Allow dynamic content to load
+            
+            # List to store tender information
+            tenders = []
+            current_page = 1
+            
+            while True:
+                print(f"Processing page {current_page}")
+            
+                # Wait for tender rows to load dynamically
+                try:
+                    print("Waiting for tender rows to load...")
+                    # Wait for at least one tr element with a numeric ID to appear
+                    WebDriverWait(self.driver, 20).until(
+                        lambda driver: driver.find_elements(By.XPATH, "//tr[@id]")
+                    )
+                    print("Tender rows detected, waiting a bit more for all content...")
+                    time.sleep(3)  # Additional time for all rows to load
+                except TimeoutException:
+                    print("Timeout waiting for tender rows to load")
+                    # Try to continue anyway in case content is there but selector is wrong
+                
+                # Get the page source and parse it with BS4
+                page_source = self.driver.page_source
+                soup = BeautifulSoup(page_source, 'html.parser')
+                
+                # Debug: Let's see what we actually have in the HTML
+                print("=== DEBUG: Checking HTML structure ===")
+                
+                # Check for tbody elements
+                tbody_elements = soup.find_all('tbody')
+                print(f"Found {len(tbody_elements)} tbody elements")
+                
+                # Check for any tr elements at all
+                all_tr_elements = soup.find_all('tr')
+                print(f"Found {len(all_tr_elements)} total tr elements")
+                
+                # Check for tr elements with any id attribute
+                tr_with_any_id = soup.find_all('tr', id=True)
+                print(f"Found {len(tr_with_any_id)} tr elements with id attribute")
+                
+                if tr_with_any_id:
+                    print("Sample tr IDs:")
+                    for tr in tr_with_any_id[:5]:
+                        print(f"  ID: {tr.get('id')}")
+                
+                # Check for elements with class names that might contain tender info
+                tender_elements = soup.find_all(class_=lambda x: x and 'tender' in x.lower())
+                print(f"Found {len(tender_elements)} elements with 'tender' in class name")
+                
+                # Look for the specific structure we expect
+                followed_tender_divs = soup.find_all('div', class_='followedTender')
+                print(f"Found {len(followed_tender_divs)} div elements with 'followedTender' class")
+                
+                print("=== END DEBUG ===")
+                
+                # Look for tender elements - try multiple approaches
+                numeric_id_rows = []
+                
+                # Method 1: Direct search for tr with numeric IDs
+                rows_with_ids = soup.find_all('tr', id=True)
+                if rows_with_ids:
+                    numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
+                    print(f"Method 1: Found {len(numeric_id_rows)} tr elements with numeric IDs")
+                
+                # Method 2: If no rows found, try using Selenium to find them
+                if not numeric_id_rows:
+                    print("Method 2: Using Selenium to find tr elements with numeric IDs")
+                    try:
+                        selenium_rows = self.driver.find_elements(By.XPATH, "//tr[@id]")
+                        print(f"Selenium found {len(selenium_rows)} tr elements with id attribute")
+                        
+                        # Filter for numeric IDs
+                        numeric_selenium_rows = []
+                        for row in selenium_rows:
+                            row_id = row.get_attribute('id')
+                            if row_id and row_id.isdigit():
+                                numeric_selenium_rows.append(row)
+                        
+                        print(f"Selenium found {len(numeric_selenium_rows)} tr elements with numeric IDs")
+                        
+                        # If we found rows with Selenium, get the page source again
+                        if numeric_selenium_rows:
+                            print("Re-parsing page source after Selenium detection...")
+                            page_source = self.driver.page_source
+                            soup = BeautifulSoup(page_source, 'html.parser')
+                            rows_with_ids = soup.find_all('tr', id=True)
+                            numeric_id_rows = [row for row in rows_with_ids if row.get('id', '').isdigit()]
+                            print(f"After re-parsing: Found {len(numeric_id_rows)} tr elements with numeric IDs")
+                    
+                    except Exception as e:
+                            print(f"Error using Selenium to find rows: {str(e)}")
+
+                tender_info_containers = []
+                if numeric_id_rows:
+                    print("Using rows with numeric IDs")
+                    tender_info_containers = numeric_id_rows
+                else:
+                    print("No tender rows found on this page")
+                    # Before giving up, let's try to save the HTML for debugging
+                    with open(f'debug_page_{current_page}.html', 'w', encoding='utf-8') as f:
+                        f.write(page_source)
+                    print(f"Saved page HTML to debug_page_{current_page}.html for inspection")
+                    break
+                    
+                # Process tenders on current page
+                page_tenders_processed = 0
+                for container in tender_info_containers:
+                    tender_data = {}  # Dictionary to store tender data
+
+                    try: 
+                        # Extract tender ID
+                        tender_id = container.get('id')
+                        if tender_id:
+                            tender_data['tender_id'] = tender_id
+                        
+                        # Try different selectors for tender title
+                        title_selectors = [
+                            '.tenderName', '.alertResultTitle', 
+                            'a', 'td a', 'td:first-child a', '.title', 'h3', 'h4'
+                        ]
+                        
+                        for selector in title_selectors:
+                            title_element = None
+                            try:
+                                if selector.startswith('.') or selector.startswith('#') or ' ' in selector:
+                                    title_element = container.select_one(selector)
+                                else:
+                                    title_element = container.find(selector)
+
+                                if title_element and title_element.text.strip():
+                                    tender_data['tender_title'] = title_element.text.strip()
+                                    break
+                            except:
+                                continue
+
+                        # Tender block information
+                        info_block = container.select_one('.tenderBody')
+                        if info_block:
+                            rows = info_block.select('.tenderDetailsRow')
+                            for row in rows:
+                                label_span = row.select_one('.tenderDetailsLabel')
+                                value_spans = row.find_all('span')
+                                
+                                if label_span and len(value_spans) > 1:
+                                    label = label_span.get_text(strip=True)
+                                    value = value_spans[1].get_text(strip=True)
+
+                                    if label == "Closing:":
+                                        tender_data['tender_closing_date'] = value
+                                    elif label == "Issued by:":
+                                        tender_data['organisation'] = value
+                                        
+                        if tender_data and 'tender_id' in tender_data:  # Only add if we have at least an ID
+                            tenders.append(tender_data)
+                            page_tenders_processed += 1
+
+                    except Exception as e:
+                        print(f"Error extracting tender data: {str(e)}")
+                        continue
+                        
+                print(f"Processed {page_tenders_processed} tenders on page {current_page}")
+                
+                # Attempt to navigate to the next page
+                try:
+                    # Find the pagination container
+                    pagination = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CLASS_NAME, "dt-custom-paging"))
+                    )
+                    buttons = pagination.find_elements(By.TAG_NAME, "button")
+                    
+                    # Look for the button that contains the fa-caret-right icon
+                    next_button = None
+                    for button in buttons:
+                        icon = button.find_elements(By.CLASS_NAME, "fa-caret-right")
+                        if icon:
+                            next_button = button
+                            break
+                    
+                    if next_button and "disabled" not in next_button.get_attribute("class") and not next_button.get_attribute("disabled"):
+                        print("Clicking next button to navigate to the next page")
+                        self.driver.execute_script("arguments[0].click();", next_button)
+                        current_page += 1
+                        time.sleep(5)  # Wait for the next page to load
+                    else:
+                        print(f"Next button is disabled or not found. End of pagination at page {current_page}")
+                        break
+                
+                except TimeoutException:
+                    print(f"No more pages to scrape (pagination container not found), ended at page {current_page}")
+                    break
+                except Exception as e:
+                    print(f"Error navigating to next page: {str(e)}")
+                    break
+                                    
+            print(f"Successfully scraped {len(tenders)} tenders across {current_page} pages")
+            return tenders
+
+        except Exception as e:
+            print(f"Error during scraping: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+
+    # Scraper for the tender description + downloader
+
+    async def scrape_tender_description(self, tender_id: str) -> Dict:
+        
+        tender_details_url =  f"https://www.vendorpanel.com.au/Members/VendorPreviewOpportunity.aspx?opportunityId={tender_id}"
+
+        try: 
+            print(f"Navigating to the tender details page: {tender_details_url}")
+
+            self.driver.get(tender_details_url)
+
+            WebDriverWait(self.driver, self.timeout).until(
+            EC.any_of(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".OpportunityPreviewRow")),
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
+                EC.url_contains("VendorPreviewOpportunity")
+            ))   #Last flag to see if we are in the right page
+            
+            print("Page loaded successfully")
+
+            # get the page source and parse it with BS4
+            page_source = self.driver.page_source
+            soup = BeautifulSoup(page_source, 'html.parser')            
+                        
+            # List to store tender information
+            tender_details = {'tender_details_url': tender_details_url}
+
+            opportunity_rows = soup.find_all('tr', class_='OpportunityPreviewRow')
+
+            for row in opportunity_rows:
+                # Look for the row that contains dates
+                date_sections = row.find_all('div', class_='opportunityPreviewInnerRow')
+                
+                for section in date_sections:
+                    heading = section.find('div', class_='opportunityPreviewMinHeading')
+                    content = section.find('div', class_='opportunityPreviewContent')
+                    
+                    if heading and content:
+                        heading_text = heading.text.strip()
+                        
+                        # Extract just the date part without the timezone info
+                        content_text = content.text.strip()
+                        if "(" in content_text:
+                            content_text = content_text.split("(")[0].strip()
+                        
+                        # Get the opening date
+                        if heading_text == "Opens":
+                            tender_details['tender_opening_date'] = content_text
+                            print(f"Found opening date: {content_text}")
+                        
+                        # Get the expected decision date
+                        elif heading_text == "Expected decision":
+                            tender_details['tender_decision_date'] = content_text
+                            print(f"Found decision date: {content_text}")
+
+                        elif heading_text == "Location":
+                            tender_details['tender_location'] = content_text
+                            print(f"Found location: {content_text}")
+                        
+                        elif heading_text == "Business Info":
+                            tender_details['tender_business_info'] = content_text
+                            print(f"Found business info: {content_text}")
+
+                        elif heading_text == "Contact Details":
+                            tender_details['tender_contact_details'] = content_text
+                            print(f"Found contact details: {content_text}")
+
+                        elif heading_text == "WebSite:":
+                            tender_details['organisation_website'] = content_text
+
+                        elif heading_text == "Email:":
+                            tender_details['organisation_email'] = content_text
+
+                        elif heading_text == "Contact Name":
+                            tender_details['organisation_contact_name'] = content_text
+                            
+                
+                
+                max_headings = row.find_all('div', class_='opportunityPreviewMaxHeading')
+
+                for max_heading in max_headings:
+                    heading_text = max_heading.text.strip()
+
+                    content_section = max_heading.find_next_sibling('div', class_='opportunityPreviewInnerRow')
+
+                    if content_section:
+                        content_div = content_section.find('div', class_='opportunityPreviewContent')
+                        if content_div:
+                            content_text = content_div.text.strip()
+
+                            if "What the buyer is requesting" in heading_text:
+                                tender_details['tender_general_details'] = content_text
+                                
+                                
+                            elif "Background information" in heading_text:
+                                tender_details['tender_background_information'] = content_text
+                                
+                            elif "Regions of Service" in heading_text:
+                                tender_details['tender_region_of_service'] = content_text
+
+                            elif "Desired Outcomes" in heading_text:
+                                tender_details['tender_desired_outcomes'] = content_text
+
+                            elif "Attachments" in heading_text:
+                                tender_details['tender_attachments'] = content_text
+
+                            elif "Updates" in heading_text:
+                                tender_details['tender_updates'] = content_text
+
+                            else:
+                                # Keep the exact heading as it appears on the website
+                                tender_details[heading_text] = content_text
+        
+            required_sections = ['tender_general_details', 'tender_background_information', 'tender_desired_outcomes']
+            for section in required_sections:
+                if section not in tender_details:
+                    tender_details[section] = "Section not available"
+                        
+                
+            return tender_details
+                    
+        except Exception as e:
+            print(f"Error during tender details scraping: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
+
+    # ID batch processing for scraping
+
+    async def scrape_tender_description_batch(self, tender_ids: List[str], delay_between_requests: float = 1.0) -> List[Dict]:
+
+        results = {
+            'successful_scrapes': {},
+            'failed_scrapes': {},
+            'summary': {
+                'total_requested': len(tender_ids),
+                'successful_count': 0,
+                'failed_count': 0
+            }
+        }
+    
+        try:
+            print(f"Processing {len(tender_ids)} tenders")
+            
+            # Process all tender_ids sequentially
+            for index, tender_id in enumerate(tender_ids, 1):
+                try:
+                    print(f"Scraping tender {index}/{len(tender_ids)}: {tender_id}")
+                    
+                    tender_details_url = f"https://www.vendorpanel.com.au/Members/VendorPreviewOpportunity.aspx?opportunityId={tender_id}"
+                        
+                        # Navigate to the tender details page
+                    self.driver.get(tender_details_url)
+                        
+                        # Wait for page to load
+                    WebDriverWait(self.driver, self.timeout).until(
+                            EC.any_of(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, ".OpportunityPreviewRow")),
+                                EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
+                                EC.url_contains("VendorPreviewOpportunity")
+                            )
+                        )
+                        
+                        # Get page source and parse
+                    page_source = self.driver.page_source
+                    soup = BeautifulSoup(page_source, 'html.parser')
+                        
+                        # Initialize tender details with ID and URL
+                    tender_details = {
+                            'tender_id': tender_id,
+                            'tender_details_url': tender_details_url
+                        }
+                        
+                        # Extract opportunity rows
+                    opportunity_rows = soup.find_all('tr', class_='OpportunityPreviewRow')
+                        
+                    for row in opportunity_rows:
+                            # Process date sections
+                            date_sections = row.find_all('div', class_='opportunityPreviewInnerRow')
+                            
+                            for section in date_sections:
+                                heading = section.find('div', class_='opportunityPreviewMinHeading')
+                                content = section.find('div', class_='opportunityPreviewContent')
+                                
+                                if heading and content:
+                                    heading_text = heading.text.strip()
+                                    content_text = content.text.strip()
+                                    
+                                    # Remove timezone info if present
+                                    if "(" in content_text:
+                                        content_text = content_text.split("(")[0].strip()
+                                    
+                                    # Map headings to tender details
+                                    heading_mapping = {
+                                        "Opens": 'tender_opening_date',
+                                        "Expected decision": 'tender_decision_date',
+                                        "Location": 'tender_location',
+                                        "Business Info": 'tender_business_info',
+                                        "Contact Details": 'tender_contact_details',
+                                        "WebSite:": 'organisation_website',
+                                        "Email:": 'organisation_email',
+                                        "Contact Name": 'organisation_contact_name'
+                                    }
+                                    
+                                    if heading_text in heading_mapping:
+                                        tender_details[heading_mapping[heading_text]] = content_text
+                            
+                            # Process max headings
+                            max_headings = row.find_all('div', class_='opportunityPreviewMaxHeading')
+                            
+                            for max_heading in max_headings:
+                                heading_text = max_heading.text.strip()
+                                content_section = max_heading.find_next_sibling('div', class_='opportunityPreviewInnerRow')
+                                
+                                if content_section:
+                                    content_div = content_section.find('div', class_='opportunityPreviewContent')
+                                    if content_div:
+                                        content_text = content_div.text.strip()
+                                        
+                                        # Map max headings to tender details
+                                        max_heading_mapping = {
+                                            "What the buyer is requesting": 'tender_general_details',
+                                            "Background information": 'tender_background_information',
+                                            "Regions of Service": 'tender_region_of_service',
+                                            "Desired Outcomes": 'tender_desired_outcomes',
+                                            "Attachments": 'tender_attachments',
+                                            "Updates": 'tender_updates'
+                                        }
+                                        
+                                        mapped = False
+                                        for key, value in max_heading_mapping.items():
+                                            if key in heading_text:
+                                                tender_details[value] = content_text
+                                                mapped = True
+                                                break
+                                        
+                                        if not mapped:
+                                            tender_details[heading_text] = content_text
+                        
+                        # Ensure required sections exist
+                    required_sections = ['tender_general_details', 'tender_background_information', 'tender_desired_outcomes']
+                    for section in required_sections:
+                            if section not in tender_details:
+                                tender_details[section] = "Section not available"
+                        
+                        # Store successful result
+                    results['successful_scrapes'][tender_id] = tender_details
+                    results['summary']['successful_count'] += 1
+                        
+                    print(f"Successfully scraped tender {index}/{len(tender_ids)}: {tender_id}")
+                        
+                except Exception as e:
+                        error_msg = f"Error scraping tender_id {tender_id}: {str(e)}"
+                        print(error_msg)
+                        results['failed_scrapes'][tender_id] = error_msg
+                        results['summary']['failed_count'] += 1
+                    
+                    # Add delay between requests to avoid overwhelming the server
+                if delay_between_requests > 0 and index < len(tender_ids):
+                        await asyncio.sleep(delay_between_requests)
+            
+            print(f"Completed processing all {len(tender_ids)} tenders")
+        
+        except Exception as e:
+            print(f"Critical error during batch processing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise e
+        
+        return results
+
+    
+
+
+
+
+    # Follow button click functionality
+
+
+    async def follow_button_click(self, tender_id: str): 
+
+        tender_details_url =  f"https://www.vendorpanel.com.au/Members/VendorPreviewOpportunity.aspx?opportunityId={tender_id}"
+
+        try: 
+            print(f"Navigating to the tender details page: {tender_details_url}")
+
+            self.driver.get(tender_details_url)
+
+            
+            try:
+                WebDriverWait(self.driver, self.timeout).until(
+                    EC.any_of(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".OpportunityPreviewRow")),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".opportunityPreviewContent")),
+                        EC.url_contains("VendorPreviewOpportunity")
+                ))   #Last flag to see if we are in the right page
+                
+                print("Page loaded successfully")
+            except TimeoutException:
+                print("Timeout waiting for the tender details page to load")
+                return False
+            
+            # get the page source and parse it with BS4
+            page_source = self.driver.page_source
+                    
+
+            # Look for the toggle container to check the current state
+            try:
+                toggle_container = WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".toggleContainer"))  
+                )
+                print("Toggle container found")
+                
+                # Check the span text to determine if it's "Follow" or "Following"
+                span_element = toggle_container.find_element(By.TAG_NAME, "span")
+                span_text = span_element.text.strip()
+                
+                print(f"Current button state: {span_text}")
+                
+                if span_text == "Following:":
+                    print("Tender is already being followed. Skipping action.")
+                    return {"success": True, "message": "Tender is already being followed. No action needed.", "already_following": True}
+                
+                elif span_text == "Follow:":
+                    print("Tender is not being followed. Proceeding to click follow button.")
+                    
+                    # Now look for the clickable follow button
+                    try:
+                        follow_button = toggle_container.find_element(By.CSS_SELECTOR, ".iconButton")
+                        
+                        # Verify it's clickable
+                        WebDriverWait(self.driver, self.timeout).until(
+                            EC.element_to_be_clickable(follow_button)
+                        )
+                        
+                        print("Follow button found and is clickable")
+                        
+                        # Click the follow button
+                        follow_button.click()
+                        print("Follow button clicked successfully")
+                        
+                        # Wait a moment for the action to complete
+                        time.sleep(1)
+                        
+                        return {"success": True, "message": "Follow button clicked successfully", "action_performed": True}
+                        
+                    except TimeoutException:
+                        return {"success": False, "error": "button_not_clickable", "message": "Follow button exists but is not clickable"}
+                    except Exception as e:
+                        return {"success": False, "error": "button_click_error", "message": f"Error clicking follow button: {str(e)}"}
+                
+                else:
+                    print(f"Unexpected button state: {span_text}")
+                    return {"success": False, "error": "unexpected_state", "message": f"Unexpected button state: {span_text}"}
+                    
+            except TimeoutException:
+                return {"success": False, "error": "toggle_container_not_found", "message": "Toggle container not found on page"}
+            except Exception as e:
+                return {"success": False, "error": "parsing_error", "message": f"Error parsing toggle container: {str(e)}"}
+            
+        except Exception as e:
+            print(f"Error during tender details scraping: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": "general_error", "message": f"General error: {str(e)}"}
+
+
+    
+    def scrape_download_files(self, tender_id, url_template, do_spaces_config: Dict[str,str], bucket_name: str) -> List[Dict]:
+        """
+        Download files for a single tender
+        
+        Args:
+            tender_id: The tender ID to download files for
+            download_url_template: URL template with {tender_id} placeholder
+            
+        Returns:
+            List[Dict]: Information about downloaded files
+        """
+        if not hasattr(self, 'driver'):
+            print("Driver not initialized. Please login first.")
+            return []
+
+        client = self._set_up_do_spaces(do_spaces_config)
+        if not client:
+                print("Failed to connect to Digital Ocean Spaces")
+                return [{'status': 'error', 'error': 'DO Spaces setup failed'}]
+
+        downloaded_files = []
+
+        try:
+                # Construct URL
+                tender_url = url_template.replace("{tender_id}", tender_id) if url_template else \
+                    f"https://www.vendorpanel.com.au/Members/iFramePopIziModal.aspx?pageSrc=/Members/VendorDownloadOpportunityPackage.aspx|||opportunityId={tender_id}"
+
+                print(f"Navigating to tender page: {tender_url}")
+                self.driver.get(tender_url)
+                
+                # Wait for iframe and switch to it
+                iframe = WebDriverWait(self.driver, self.timeout).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "iframe"))
+                )
+                self.driver.switch_to.frame(iframe)
+
+                # Find the "Download All" button by ID or text — adjust selector as needed
+                download_button = WebDriverWait(self.driver, self.timeout).until(
+                    EC.element_to_be_clickable((
+                        By.XPATH,
+                        "//input[@id='btnGo' or @name='PopUpMaster$masterMain$btnGo' or contains(@class, 'formBtnBlue')]"
+                    ))
+                )
+
+                # Clear download directory before downloading
+                if os.path.exists(self.download_dir):
+                    for file in os.listdir(self.download_dir):
+                        file_path = os.path.join(self.download_dir, file)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+
+                # Click the download button
+                print("Clicking download button")
+                self.driver.execute_script("arguments[0].click();", download_button)
+
+                print(f"Download directory: {self.download_dir}")
+                if os.path.exists(self.download_dir):
+                    print(f"Files in download dir before download: {os.listdir(self.download_dir)}")
+
+                # Wait for file(s) to be downloaded
+                downloaded_path = wait_for_download(download_dir=self.download_dir, timeout=120)
+
+                if not downloaded_path:
+                    return [{'status': 'error', 'error': 'Download failed or timed out'}]
+
+                if downloaded_path.lower().endswith('.zip'):
+                    # Extract the zip
+                    extract_dir = os.path.join(self.download_dir, f"extracted_{tender_id}")
+                    os.makedirs(extract_dir, exist_ok=True)
+                    extracted_files = extract_zip_file(downloaded_path, extract_dir)
+
+                    if not extracted_files:
+                        return [{'status': 'error', 'error': 'No files extracted from zip or null files'}]
+
+                    for file_path in extracted_files:
+                        
+                        if os.path.isfile(file_path):
+                        
+                            filename = os.path.basename(file_path)
+                            object_key = f"{tender_id}/{filename}"
+                            upload_success = upload_file_to_spaces(client, bucket_name, file_path, object_key)
+
+                            downloaded_files.append({
+                                'filename': filename,
+                                'local_path': file_path,
+                                'file_size': os.path.getsize(file_path),
+                                'status': 'uploaded' if upload_success else 'upload_failed',
+                                'spaces_path': object_key if upload_success else None
+                        })
+                else:
+                    # If not a zip, upload directly
+                    if os.path.isfile(downloaded_path):
+                    
+                        filename = os.path.basename(downloaded_path)
+                        object_key = f"{tender_id}/{filename}"
+                        upload_success = upload_file_to_spaces(client, bucket_name, downloaded_path, object_key)
+
+                        downloaded_files.append({
+                            'filename': filename,
+                            'local_path': downloaded_path,
+                            'file_size': os.path.getsize(downloaded_path),
+                            'status': 'uploaded' if upload_success else 'upload_failed',
+                            'spaces_path': object_key if upload_success else None
+                        })
+                    else:
+                        downloaded_files.append({
+                            'status': 'error',
+                            'error': f'Downloaded path is not a file: {downloaded_path}'
+                        })
+
+        except Exception as e:
+                print(f"Error in scrape_download_files: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                downloaded_files.append({
+                    'status': 'error',
+                    'error': str(e)
+                })
+
+        return downloaded_files  
+    
+    
+    def download_tender_files_bulk(self, tender_ids: List[str], url_template: str, do_spaces_config: Dict[str, str], bucket_name) -> List[Dict]:
+        """
+        Download files for multiple tenders from a given URL and upload to Digital Ocean Spaces
+        
+        Args:
+            tender_ids: List of tender IDs to process
+            download_url: URL where the download functionality is available
+            do_spaces_config: Digital Ocean Spaces configuration
+            
+        Returns:
+            List[Dict]: Results for each tender processed
+        """
+        if not hasattr(self, 'driver'):
+            print("Driver not initialized. Please login first.")
+            return []
+
+
+
+        # Set up Digital Ocean Spaces client
+        spaces_client = self._set_up_do_spaces(do_spaces_config)
+        if not spaces_client:
+            return [{"error": "Failed to initialize Digital Ocean Spaces client"}]
+
+        results = []
+        bucket_name = do_spaces_config.get('bucket_name')
+        
+        for tender_id in tender_ids:
+            tender_result = {
+                "tender_id": tender_id,
+                "status": "processing",
+                "files_uploaded": [],
+                "errors": []
+            }
+            
+            try:
+                print(f"Processing tender ID: {tender_id}")
+                
+                
+                
+                # Wait for download to complete
+                downloaded_files = self.scrape_download_files(
+                    tender_id=tender_id, 
+                    url_template=url_template, 
+                    do_spaces_config=do_spaces_config, 
+                    bucket_name=bucket_name)
+                
+                if not downloaded_files:
+                    tender_result["status"] = "error"
+                    tender_result["errors"].append("Download timeout or failed")
+                    results.append(tender_result)
+                    continue
+                
+                print(f"Downloaded file: {downloaded_files}")
+                
+                for file_info in downloaded_files:
+                    if file_info.get('status') == 'error':
+                        tender_result["errors"].append(file_info.get('error', 'Unknown error'))
+                    elif file_info.get('status') == 'uploaded':
+                        tender_result["files_uploaded"].append({
+                            "filename": file_info.get('filename'),
+                            "object_key": file_info.get('spaces_path'),
+                            "file_size": file_info.get('file_size'),
+                            "local_path": file_info.get('local_path')
+                        })
+                    elif file_info.get('status') == 'upload_failed':
+                        tender_result["errors"].append(f"Failed to upload {file_info.get('filename', 'unknown file')}")
+                
+                # Set final status
+                if tender_result["files_uploaded"]:
+                    tender_result["status"] = "completed"
+                else:
+                    tender_result["status"] = "error"
+                    if not tender_result["errors"]:
+                        tender_result["errors"].append("No files were successfully uploaded")
+                        
+            except Exception as e:
+                print(f"Error processing tender {tender_id}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                tender_result["status"] = "error"
+                tender_result["errors"].append(str(e))
+            
+            results.append(tender_result)
+            
+            # Add delay between tenders
+            time.sleep(2)
+        
+        return results
+
+
+
+    # More methods (scrape_tenders, scrape_tender_description, follow_button_click, scrape_download_files, etc.)
+    # You can paste the rest of your TenderScraper methods here directly with no changes,
+    # except where you replace calls to `_download_wait_`, `_extract_zip_file`, and `_upload_file_to_spaces`
+    # with imported functions from utils.py:
+    #
+    # wait_for_download()
+    # extract_zip_file()
+    # upload_file_to_spaces()
